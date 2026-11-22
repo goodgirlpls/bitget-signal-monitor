@@ -1,6 +1,11 @@
 
 name: Bitget Signal Monitor
 
+concurrency:
+  group: bitget-signal-monitor
+  cancel-in-progress: false
+
+
 on:
   workflow_dispatch:
   schedule:
