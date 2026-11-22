@@ -256,7 +256,53 @@ def analyze(symbol, candles):
     print("INVALIDATION: structure stop breached")
     print("WARNING: historical candle-close candidate,")
     print("not a verified live executable order.")
+    
+    import os
 
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        raise RuntimeError("Telegram secrets missing")
+
+    candle_time = datetime.fromtimestamp(
+        last["time"] / 1000, timezone.utc
+    ).strftime("%Y-%m-%d %H:%M UTC")
+
+    message = (
+        f"Bitget 15m 模拟候选信号\n"
+        f"币种：{symbol}\n"
+        f"方向：{direction}\n"
+        f"原因：{reason}\n"
+        f"K线时间：{candle_time}\n"
+        f"参考入场价：{price:.6f}\n"
+        f"止损：{stop:.6f}\n"
+        f"止盈：{target:.6f}\n"
+        f"理论数量：{quantity:.8f}\n"
+        f"预计亏损：{estimated_loss:.4f} USDT\n"
+        f"预计净盈亏比：{net_rr:.2f}\n"
+        f"注意：仅供模拟研究，不是实时可执行报价。"
+    )
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": message
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        url, data=payload, method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.load(response)
+
+    if not result.get("ok"):
+        raise RuntimeError("Telegram notification failed")
+
+    print("TELEGRAM SIGNAL SENT")
+
+    
 
 def main():
     failures = []
