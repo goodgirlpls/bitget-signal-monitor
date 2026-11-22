@@ -274,5 +274,35 @@ def main():
         raise RuntimeError("Data unavailable: " + ", ".join(failures))
 
 
+
 if __name__ == "__main__":
+    import os
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        raise RuntimeError("Telegram secrets are missing")
+
+    message = "✅ Bitget监控机器人连接成功！"
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": message
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.load(response)
+
+    if not result.get("ok"):
+        raise RuntimeError("Telegram message failed")
+
+    print("TELEGRAM TEST SUCCESS")
     main()
