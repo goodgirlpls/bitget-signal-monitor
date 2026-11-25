@@ -58,7 +58,14 @@ def demo_get(path, query=""):
         ) as response:
             result = json.load(response)
 
-    except urllib.error.HTTPError as error:
+        except urllib.error.HTTPError as error:
+        try:
+            details = json.loads(error.read().decode("utf-8"))
+            print("Bitget error code:", details.get("code"))
+            print("Bitget error message:", details.get("msg"))
+        except (ValueError, UnicodeError):
+            print("No readable API error details")
+
         raise RuntimeError(
             f"Bitget HTTP error: {error.code}"
         ) from None
