@@ -12,6 +12,7 @@ on:
           - check
           - auto_trade
           - report
+          - execution_check
 
 permissions:
   contents: read
@@ -42,4 +43,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TRADER_MODE: ${{ inputs.mode }}
-        run: python trader.py
+        run: |
+          if [ "$TRADER_MODE" = "execution_check" ]; then
+            python execution_check.py
+          else
+            python trader.py
+          fi
