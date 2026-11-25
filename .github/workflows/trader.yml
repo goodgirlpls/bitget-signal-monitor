@@ -10,11 +10,11 @@ on:
       mode:
         description: Trading mode
         required: true
-        default: check
+        default: auto_trade
         type: choice
         options:
-          - check
           - auto_trade
+          - check
           - report
           - execution_check
           - execution_test
@@ -51,14 +51,15 @@ jobs:
           TRADER_MODE: ${{ inputs.mode }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
+
         run: |
           if [ "$EVENT_NAME" = "schedule" ]; then
             if [ "$EVENT_SCHEDULE" = "0 20 * * *" ]; then
               export TRADER_MODE=report
-              python trader.py
             else
-              python -c "from monitor import SYMBOLS, get_candles, analyze_signal; from trader import send_telegram; exec('for symbol in SYMBOLS:\n    signal = analyze_signal(symbol, get_candles(symbol))\n    if signal:\n        print(signal)\n        send_telegram(\"Demo candidate: \" + str(signal))')"
+              export TRADER_MODE=auto_trade
             fi
+            python trader.py
           elif [ "$TRADER_MODE" = "execution_check" ]; then
             python execution_check.py
           elif [ "$TRADER_MODE" = "execution_test" ]; then
