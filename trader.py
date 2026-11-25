@@ -6,6 +6,7 @@ import base64
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 
 BASE_URL = "https://api.bitget.com"
 
@@ -13,13 +14,22 @@ API_KEY = os.environ.get("BITGET_DEMO_API_KEY")
 SECRET_KEY = os.environ.get("BITGET_DEMO_SECRET_KEY")
 PASSPHRASE = os.environ.get("BITGET_DEMO_PASSPHRASE")
 
+CAPITAL = 145.0
+MAX_RISK = 5.0
+MAX_DAILY_LOSS = 10.0
+MAX_LEVERAGE = 100
+MAX_POSITIONS = 3
+MIN_RR = 1.8
 
-def demo_get(path, query=""):
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def demo_get(path, params=None):
     timestamp = str(int(time.time() * 1000))
     request_path = path
 
-    if query:
-        request_path += "?" + query
+    if params:
+        request_path += "?" + urllib.parse.urlencode(params)
 
     message = timestamp + "GET" + request_path
 
@@ -62,9 +72,13 @@ def demo_get(path, query=""):
             )
             print("Bitget error code:", details.get("code"))
             msg = str(details.get("msg", ""))
-            for secret in (API_KEY, SECRET_KEY, PASSPHRASE):
+
+            for secret in (
+                API_KEY, SECRET_KEY, PASSPHRASE
+            ):
                 if secret:
                     msg = msg.replace(secret, "***")
+
             print("Bitget error message:", msg)
 
         except (ValueError, UnicodeError):
@@ -80,32 +94,107 @@ def demo_get(path, query=""):
     return result.get("data")
 
 
+def get_accounts():
+    return demo_get(
+        "/api/v2/mix/account/accounts",
+        {"productType": "USDT-FUTURES"}
+    )
+
+
+def get_positions():
+    return demo_get(
+        "/api/v2/mix/position/all-position",
+        {
+            "productType": "USDT-FUTURES",
+            "marginCoin": "USDT"
+        }
+    )
+
+
+def get_pending_orders():
+    return demo_get(
+        "/api/v2/mix/order/orders-pending",
+        {"productType": "USDT-FUTURES"}
+    )
+
+
 def main():
     if not all([API_KEY, SECRET_KEY, PASSPHRASE]):
         raise RuntimeError("Missing Demo API credentials")
 
     print("MODE: DEMO ONLY")
-    print("Connecting to Bitget Demo API...")
+    print("ORDER EXECUTION: DISABLED")
 
-    accounts = demo_get(
-        "/api/v2/mix/account/accounts",
-        "productType=USDT-FUTURES"
-    )
+    print("\n===== ACCOUNT =====")
+
+    accounts = get_accounts()
 
     if not isinstance(accounts, list):
         raise RuntimeError("Unexpected account response")
 
-    print("API CONNECTION SUCCESS")
-
     for account in accounts:
-        print("--------------------------")
         print("Currency:", account.get("marginCoin"))
         print("Available:", account.get("available"))
-        print("Account equity:", account.get("accountEquity"))
+        print("Equity:", account.get("accountEquity"))
         print("Unrealized PnL:", account.get("unrealizedPL"))
 
-    print("--------------------------")
-    print("TEST COMPLETED")
+    print("\n===== POSITIONS =====")
+
+    positions = get_positions()
+
+    if not isinstance(positions, list):
+        raise RuntimeError("Unexpected position response")
+
+    active_positions = [
+        p for p in positions
+        if float(p.get("total") or 0) > 0
+    ]
+
+    print("Active positions:", len(active_positions))
+
+    for position in active_positions:
+        print("--------------------------")
+        print("Symbol:", position.get("symbol"))
+        print("Direction:", position.get("holdSide"))
+        print("Quantity:", position.get("total"))
+        print("Entry:", position.get("openPriceAvg"))
+        print("Leverage:", position.get("leverage"))
+        print("Margin mode:", position.get("marginMode"))
+        print("Unrealized PnL:", position.get("unrealizedPL"))
+        print("Liquidation price:", position.get("liquidationPrice"))
+
+    print("\n===== PENDING ORDERS =====")
+
+    orders = get_pending_orders()
+
+    if not isinstance(orders, dict):
+        raise RuntimeError("Unexpected pending order response")
+
+    pending = orders.get("entrustedList") or []
+
+    if not isinstance(pending, list):
+        raise RuntimeError("Unexpected order list")
+
+    print("Pending orders on returned page:", len(pending))
+
+    for order in pending:
+        print("--------------------------")
+        print("Symbol:", order.get("symbol"))
+        print("Side:", order.get("side"))
+        print("Price:", order.get("price"))
+        print("Size:", order.get("size"))
+        print("Status:", order.get("status"))
+
+    print("\n===== RISK SETTINGS =====")
+
+    print("Experiment capital:", CAPITAL)
+    print("Maximum planned risk:", MAX_RISK)
+    print("Daily loss limit:", MAX_DAILY_LOSS)
+    print("Leverage ceiling:", MAX_LEVERAGE)
+    print("Maximum positions:", MAX_POSITIONS)
+    print("Minimum net R/R:", MIN_RR)
+
+    print("\nALL READ TESTS PASSED")
     print("No orders were placed.")
 
 
