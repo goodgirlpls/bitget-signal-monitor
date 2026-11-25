@@ -170,33 +170,91 @@ def get_symbol_account(symbol):
     )
 
 
-def main():
+def get_history_positions(start_time, end_time):
 
-    print("===== DEMO EXECUTION MODULE =====")
+    return demo_get(
+        "/api/v2/mix/position/history-position",
+        {
+            "productType": PRODUCT_TYPE,
+            "startTime": str(start_time),
+            "endTime": str(end_time),
+            "limit": "100"
+        }
+    )
 
-    for symbol in SYMBOLS:
 
-        account = get_symbol_account(symbol)
+def place_order(
+    symbol,
+    direction,
+    size,
+    price,
+    stop,
+    target,
+    client_oid
+):
 
-        print("\nSymbol:", symbol)
-        print("Position mode:", account.get("posMode"))
-        print("Margin mode:", account.get("marginMode"))
-        print(
-            "Current leverage:",
-            account.get("crossedMarginLeverage")
-        )
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid symbol")
 
-        if account.get("posMode") != "hedge_mode":
-            raise RuntimeError("Unexpected position mode")
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid direction")
 
-        if account.get("marginMode") != "crossed":
-            raise RuntimeError("Unexpected margin mode")
+    if float(size) <= 0:
+        raise RuntimeError("Invalid order size")
 
-    print("\nEXECUTION MODULE READ CHECK PASSED")
-    print("No orders were placed.")
+    if min(float(price), float(stop), float(target)) <= 0:
+        raise RuntimeError("Invalid price")
+
+    if direction == "LONG":
+        if not float(stop) < float(price) < float(target):
+            raise RuntimeError("Invalid LONG stop or target")
+
+    if direction == "SHORT":
+        if not float(target) < float(price) < float(stop):
+            raise RuntimeError("Invalid SHORT stop or target")
+
+    if not client_oid:
+        raise RuntimeError("Missing client order ID")
+
+    account = get_symbol_account(symbol)
+
+    if account.get("posMode") != "hedge_mode":
+        raise RuntimeError("Unexpected position mode")
+
+    if account.get("marginMode") != "crossed":
+        raise RuntimeError("Unexpected margin mode")
+
+    leverage = float(account["crossedMarginLeverage"])
+
+    if not 1 <= leverage <= MAX_LEVERAGE:
+        raise RuntimeError("Leverage exceeds limit")
+
+    side = "buy" if direction == "LONG" else "sell"
+
+    body = {
+        "symbol": symbol,
+        "productType": PRODUCT_TYPE,
+        "marginMode": "crossed",
+        "marginCoin": MARGIN_COIN,
+        "size": str(size),
+        "price": str(price),
+        "side": side,
+        "tradeSide": "open",
+        "orderType": "limit",
+        "force": "fok",
+        "clientOid": client_oid,
+        "presetStopSurplusPrice": str(target),
+        "presetStopLossPrice": str(stop)
+    }
+
+    return demo_post(
+        "/api/v2/mix/order/place-order",
+        body
+    )
 
 
 def test_post():
+
     account = get_symbol_account("BTCUSDT")
 
     if account.get("marginMode") != "crossed":
@@ -226,19 +284,8 @@ def test_post():
     print("No orders were placed.")
 
 
-def get_history_positions(start_time, end_time):
-    return demo_get(
-        "/api/v2/mix/position/history-position",
-        {
-            "productType": PRODUCT_TYPE,
-            "startTime": str(start_time),
-            "endTime": str(end_time),
-            "limit": "100"
-        }
-    )
-
-
 def test_history():
+
     end_time = int(time.time() * 1000)
     start_time = end_time - 86400000
 
@@ -260,7 +307,38 @@ def test_history():
     print("HISTORY REQUEST COMPLETED")
 
 
+def main():
+
+    print("===== DEMO EXECUTION MODULE =====")
+
+    for symbol in SYMBOLS:
+
+        account = get_symbol_account(symbol)
+
+        print("\nSymbol:", symbol)
+        print("Position mode:", account.get("posMode"))
+        print("Margin mode:", account.get("marginMode"))
+
+        print(
+            "Current leverage:",
+            account.get("crossedMarginLeverage")
+        )
+
+        if account.get("posMode") != "hedge_mode":
+            raise RuntimeError("Unexpected position mode")
+
+        if account.get("marginMode") != "crossed":
+            raise RuntimeError("Unexpected margin mode")
+
+    print("\nEXECUTION MODULE READ CHECK PASSED")
+    print("No orders were placed.")
+
+
 if __name__ == "__main__":
     main()
     test_post()
     test_history()
+
+    print("\n===== EXECUTION MODULE READY =====")
+    print("Order function loaded:", callable(place_order))
+    print("Automatic order submission is not enabled.")
