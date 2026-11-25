@@ -1,0 +1,31 @@
+name: Bitget Demo Trader
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bitget-demo-trader
+  cancel-in-progress: false
+
+jobs:
+  trader:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test Bitget Demo API
+        env:
+          BITGET_DEMO_API_KEY: ${{ secrets.BITGET_DEMO_API_KEY }}
+          BITGET_DEMO_SECRET_KEY: ${{ secrets.BITGET_DEMO_SECRET_KEY }}
+          BITGET_DEMO_PASSPHRASE: ${{ secrets.BITGET_DEMO_PASSPHRASE }}
+        run: python trader.py
