@@ -14,15 +14,10 @@ SECRET_KEY = os.environ.get("BITGET_DEMO_SECRET_KEY")
 PASSPHRASE = os.environ.get("BITGET_DEMO_PASSPHRASE")
 
 
-def check_credentials():
-    if not all([API_KEY, SECRET_KEY, PASSPHRASE]):
-        raise RuntimeError("Missing Bitget Demo API credentials")
-
-
 def demo_get(path, query=""):
     timestamp = str(int(time.time() * 1000))
-
     request_path = path
+
     if query:
         request_path += "?" + query
 
@@ -58,17 +53,24 @@ def demo_get(path, query=""):
         ) as response:
             result = json.load(response)
 
-        except urllib.error.HTTPError as error:
+    except urllib.error.HTTPError as error:
+        print("HTTP status:", error.code)
+
         try:
-            details = json.loads(error.read().decode("utf-8"))
+            details = json.loads(
+                error.read().decode("utf-8")
+            )
             print("Bitget error code:", details.get("code"))
-            print("Bitget error message:", details.get("msg"))
+            msg = str(details.get("msg", ""))
+            for secret in (API_KEY, SECRET_KEY, PASSPHRASE):
+                if secret:
+                    msg = msg.replace(secret, "***")
+            print("Bitget error message:", msg)
+
         except (ValueError, UnicodeError):
             print("No readable API error details")
 
-        raise RuntimeError(
-            f"Bitget HTTP error: {error.code}"
-        ) from None
+        raise RuntimeError("Bitget request rejected") from None
 
     if result.get("code") != "00000":
         raise RuntimeError(
@@ -79,7 +81,8 @@ def demo_get(path, query=""):
 
 
 def main():
-    check_credentials()
+    if not all([API_KEY, SECRET_KEY, PASSPHRASE]):
+        raise RuntimeError("Missing Demo API credentials")
 
     print("MODE: DEMO ONLY")
     print("Connecting to Bitget Demo API...")
