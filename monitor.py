@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 BASE_URL = "https://api.bitget.com/api/v2/mix/market/candles"
 
-CAPITAL = 50.0
-MAX_RISK = 0.50
-MAX_LEVERAGE = 2
+CAPITAL = 145.0
+MAX_RISK = 5.0
+MAX_LEVERAGE = 100
+MIN_RR = 1.8
 ENTRY_FEE = 0.0006
 EXIT_FEE = 0.0006
 SLIPPAGE = 0.0005
@@ -226,10 +227,10 @@ def analyze(symbol, candles):
     estimated_loss = quantity * risk_per_unit
 
     if direction == "LONG":
-        target = price + 2 * risk_per_unit
+        target = price + MIN_RR * risk_per_unit + price * cost_rate
         gross_profit = (target - price) * quantity
     else:
-        target = price - 2 * risk_per_unit
+        target = price - MIN_RR * risk_per_unit - price * cost_rate
         if target <= 0:
             return
         gross_profit = (price - target) * quantity
@@ -238,7 +239,7 @@ def analyze(symbol, candles):
     net_profit = gross_profit - estimated_cost
     net_rr = net_profit / estimated_loss
 
-    if notional < 5 or net_rr < 1.5:
+    if notional < 5 or net_rr < MIN_RR - 1e-9:
         print("DECISION: REJECTED - costs or size")
         return
 
@@ -257,6 +258,36 @@ def analyze(symbol, candles):
     print("WARNING: historical candle-close candidate,")
     print("not a verified live executable order.")
     
+       candle_time = datetime.fromtimestamp(
+        (last["time"] + 900000) / 1000,
+        timezone.utc
+    ).strftime("%Y-%m-%d %H:%M UTC")
+
+    message = (
+        f"📊 Bitget 15m 候选信号\n\n"
+        f"币种：{symbol}\n"
+        f"方向：{direction}\n"
+        f"原因：{reason}\n"
+        f"K线收盘时间：{candle_time}\n\n"
+        f"参考入场价：{price:.6f}\n"
+        f"止损：{stop:.6f}\n"
+        f"止盈：{target:.6f}\n\n"
+        f"账户参考本金：{CAPITAL:.2f} USDT\n"
+        f"理论数量：{quantity:.8f}\n"
+        f"名义仓位：{notional:.2f} USDT\n"
+        f"预计亏损：{estimated_loss:.2f} USDT\n"
+        f"预计净利润：{net_profit:.2f} USDT\n"
+        f"预计净盈亏比：1:{net_rr:.2f}\n\n"
+        f"每日计划亏损上限：10 USDT\n"
+        f"最多同时持仓：3笔\n"
+        f"以上两项需手动检查。\n\n"
+        f"⚠️ 仅供模拟研究，非实时可执行报价。"
+    )
+
+    return message
+
+
+def send_telegram(symbol, message):
     import os
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -265,60 +296,137 @@ def analyze(symbol, candles):
     if not token or not chat_id:
         raise RuntimeError("Telegram secrets missing")
 
-    candle_time = datetime.fromtimestamp(
-        last["time"] / 1000, timezone.utc
-    ).strftime("%Y-%m-%d %H:%M UTC")
-
-    message = (
-        f"Bitget 15m 模拟候选信号\n"
-        f"币种：{symbol}\n"
-        f"方向：{direction}\n"
-        f"原因：{reason}\n"
-        f"K线时间：{candle_time}\n"
-        f"参考入场价：{price:.6f}\n"
-        f"止损：{stop:.6f}\n"
-        f"止盈：{target:.6f}\n"
-        f"理论数量：{quantity:.8f}\n"
-        f"预计亏损：{estimated_loss:.4f} USDT\n"
-        f"预计净盈亏比：{net_rr:.2f}\n"
-        f"注意：仅供模拟研究，不是实时可执行报价。"
-    )
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🔄 重新检测行情",
+                    "callback_data": f"recheck:{symbol}"
+                }
+            ]
+        ]
+    }
+
     payload = urllib.parse.urlencode({
         "chat_id": chat_id,
-        "text": message
+        "text": message,
+        "reply_markup": json.dumps(keyboard)
     }).encode("utf-8")
 
     request = urllib.request.Request(
-        url, data=payload, method="POST"
+        url,
+        data=payload,
+        method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        result = json.load(response)
+    try:
+        with urllib.request.urlopen(
+            request, timeout=20
+        ) as response:
+            result = json.load(response)
+    except Exception:
+        raise RuntimeError(
+            "Telegram notification failed"
+        ) from None
 
     if not result.get("ok"):
         raise RuntimeError("Telegram notification failed")
 
-    print("TELEGRAM SIGNAL SENT")
+    print("TELEGRAM MESSAGE SENT")
 
-    
 
 def main():
+    import os
+
+    mode = os.environ.get(
+        "MONITOR_MODE", "monitor"
+    ).strip().lower()
+
+    selected_symbol = os.environ.get(
+        "RECHECK_SYMBOL", ""
+    ).strip().upper()
+
+    if mode not in ("monitor", "recheck"):
+        raise RuntimeError("Invalid monitor mode")
+
+    if mode == "recheck":
+        if selected_symbol not in SYMBOLS:
+            raise RuntimeError("Invalid recheck symbol")
+
+        symbols = [selected_symbol]
+    else:
+        symbols = SYMBOLS
+
     failures = []
 
-    for symbol in SYMBOLS:
+    for symbol in symbols:
         try:
             candles = get_candles(symbol)
-            print(f"\nDATA SUCCESS: {symbol}, {len(candles)} closed candles")
-            analyze(symbol, candles)
+
+            print(
+                f"DATA SUCCESS: {symbol}, "
+                f"{len(candles)} closed candles"
+            )
+
+            message = analyze(symbol, candles)
+
+            if message:
+                if mode == "recheck":
+                    message = (
+                        "🔄 重新检测结果\n\n"
+                        + message
+                    )
+
+                send_telegram(symbol, message)
+
+            elif mode == "recheck":
+                last = candles[-1]
+
+                checked_time = datetime.now(
+                    timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+
+                candle_time = datetime.fromtimestamp(
+                    (last["time"] + 900000) / 1000,
+                    timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+
+                send_telegram(
+                    symbol,
+                    f"🔄 重新检测结果\n\n"
+                    f"币种：{symbol}\n"
+                    f"检测时间：{checked_time}\n"
+                    f"K线收盘时间：{candle_time}\n"
+                    f"最近收盘价：{last['close']:.6f}\n\n"
+                    f"❌ 当前没有符合策略的交易信号。\n"
+                    f"建议：继续等待，不开仓。"
+                )
+
         except Exception as error:
-            print(f"DATA FAILED: {symbol}: {error}")
+            print(
+                f"PROCESS FAILED: {symbol}: "
+                f"{type(error).__name__}"
+            )
+
             failures.append(symbol)
 
-    if failures:
-        raise RuntimeError("Data unavailable: " + ", ".join(failures))
+            if mode == "recheck":
+                try:
+                    send_telegram(
+                        symbol,
+                        f"⚠️ {symbol} 重新检测失败。\n"
+                        f"暂时无法确认行情或信号状态，"
+                        f"请稍后重试。"
+                    )
+                except Exception:
+                    print("Failure notification unavailable")
 
+    if failures:
+        raise RuntimeError(
+            "Processing failed: " + ", ".join(failures)
+        )
 
 
 if __name__ == "__main__":
