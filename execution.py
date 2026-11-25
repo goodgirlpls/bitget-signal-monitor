@@ -196,5 +196,36 @@ def main():
     print("No orders were placed.")
 
 
+def test_post():
+    account = get_symbol_account("BTCUSDT")
+
+    if account.get("marginMode") != "crossed":
+        raise RuntimeError("Unexpected margin mode")
+
+    leverage = str(account["crossedMarginLeverage"])
+
+    result = demo_post(
+        "/api/v2/mix/account/set-leverage",
+        {
+            "symbol": "BTCUSDT",
+            "productType": PRODUCT_TYPE,
+            "marginCoin": MARGIN_COIN,
+            "leverage": leverage
+        }
+    )
+
+    print("POST RESPONSE:", result)
+
+    updated = get_symbol_account("BTCUSDT")
+
+    if str(updated.get("crossedMarginLeverage")) != leverage:
+        raise RuntimeError("Leverage verification failed")
+
+    print("POST SIGNATURE TEST PASSED")
+    print("Leverage unchanged:", leverage)
+    print("No orders were placed.")
+
+
 if __name__ == "__main__":
     main()
+    test_post()
