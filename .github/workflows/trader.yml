@@ -2,6 +2,16 @@ name: Bitget Demo Trader
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Trading mode
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - test_open
+          - test_close
 
 permissions:
   contents: read
@@ -13,6 +23,7 @@ concurrency:
 jobs:
   trader:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -23,9 +34,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test Bitget Demo API
+      - name: Run Bitget Demo Trader
         env:
           BITGET_DEMO_API_KEY: ${{ secrets.BITGET_DEMO_API_KEY }}
           BITGET_DEMO_SECRET_KEY: ${{ secrets.BITGET_DEMO_SECRET_KEY }}
           BITGET_DEMO_PASSPHRASE: ${{ secrets.BITGET_DEMO_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TRADER_MODE: ${{ inputs.mode }}
         run: python trader.py
