@@ -226,6 +226,41 @@ def test_post():
     print("No orders were placed.")
 
 
+def get_history_positions(start_time, end_time):
+    return demo_get(
+        "/api/v2/mix/position/history-position",
+        {
+            "productType": PRODUCT_TYPE,
+            "startTime": str(start_time),
+            "endTime": str(end_time),
+            "limit": "100"
+        }
+    )
+
+
+def test_history():
+    end_time = int(time.time() * 1000)
+    start_time = end_time - 86400000
+
+    result = get_history_positions(
+        start_time,
+        end_time
+    )
+
+    print("\n===== HISTORY POSITIONS =====")
+
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False
+        )
+    )
+
+    print("HISTORY REQUEST COMPLETED")
+
+
 if __name__ == "__main__":
     main()
     test_post()
+    test_history()
