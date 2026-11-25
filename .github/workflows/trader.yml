@@ -10,8 +10,8 @@ on:
         type: choice
         options:
           - check
-          - test_open
-          - test_close
+          - auto_trade
+          - report
 
 permissions:
   contents: read
