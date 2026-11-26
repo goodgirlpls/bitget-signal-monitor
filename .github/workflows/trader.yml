@@ -1,24 +1,21 @@
+
 name: Bitget Demo Trader
 
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
-    - cron: '0 20 * * *'
+    - cron: "7,22,37,52 * * * *"
 
   workflow_dispatch:
     inputs:
       mode:
-        description: Trading mode
+        description: "Trader mode"
         required: true
-        default: auto_trade
+        default: "auto_trade"
         type: choice
         options:
           - auto_trade
           - check
           - report
-          - execution_check
-          - execution_test
-          - protection_check
 
 permissions:
   contents: read
@@ -33,39 +30,20 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Run Bitget Demo Trader
+      - name: Run Demo Trader
         env:
           BITGET_DEMO_API_KEY: ${{ secrets.BITGET_DEMO_API_KEY }}
           BITGET_DEMO_SECRET_KEY: ${{ secrets.BITGET_DEMO_SECRET_KEY }}
           BITGET_DEMO_PASSPHRASE: ${{ secrets.BITGET_DEMO_PASSPHRASE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TRADER_MODE: ${{ inputs.mode }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
-
-        run: |
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            if [ "$EVENT_SCHEDULE" = "0 20 * * *" ]; then
-              export TRADER_MODE=report
-            else
-              export TRADER_MODE=auto_trade
-            fi
-            python trader.py
-          elif [ "$TRADER_MODE" = "execution_check" ]; then
-            python execution_check.py
-          elif [ "$TRADER_MODE" = "execution_test" ]; then
-            python execution.py
-          elif [ "$TRADER_MODE" = "protection_check" ]; then
-            python protection.py
-          else
-            python trader.py
-          fi
+          TRADER_MODE: ${{ github.event_name == 'schedule' && 'auto_trade' || inputs.mode }}
+        run: python trader.py
