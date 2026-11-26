@@ -1,3 +1,4 @@
+
 import os
 import time
 import math
@@ -38,11 +39,10 @@ from protection import (
 )
 
 MODE = os.environ.get("TRADER_MODE", "check")
+EXECUTION_ENABLED = True
 
 PRODUCT_TYPE = "USDT-FUTURES"
 MARGIN_COIN = "USDT"
-
-EXECUTION_ENABLED = True
 
 CONTRACTS = {
     "BTCUSDT": {
@@ -68,7 +68,7 @@ def number(value):
     result = float(value)
 
     if not math.isfinite(result):
-        raise RuntimeError("Invalid numeric data")
+        raise RuntimeError("Invalid numeric value")
 
     return result
 
@@ -115,21 +115,15 @@ def send_telegram(message):
     )
 
     try:
-
         with urllib.request.urlopen(
             request, timeout=20
         ) as response:
 
             result = json.load(response)
 
-        print(
-            "TELEGRAM SENT"
-            if result.get("ok")
-            else "TELEGRAM FAILED"
-        )
+        print("Telegram:", result.get("ok"))
 
     except Exception:
-
         print("Telegram notification failed")
 
 
@@ -176,15 +170,18 @@ def account_snapshot():
     )
 
     if not isinstance(orders, dict):
-        raise RuntimeError("Invalid order response")
+        raise RuntimeError("Invalid pending response")
 
-    pending = orders.get("entrustedList") or []
+    if "entrustedList" not in orders:
+        raise RuntimeError("Missing pending list")
+
+    pending = orders["entrustedList"] or []
 
     if not isinstance(pending, list):
-        raise RuntimeError("Invalid pending orders")
+        raise RuntimeError("Invalid pending list")
 
     if len(pending) >= 100:
-        raise RuntimeError("Pending order pagination required")
+        raise RuntimeError("Pagination required")
 
     return {
         "equity": number(account["accountEquity"]),
@@ -226,9 +223,6 @@ def daily_loss():
 
     for position in records:
 
-        if "netProfit" not in position:
-            raise RuntimeError("Net profit field missing")
-
         pnl = number(position["netProfit"])
 
         net_profit += pnl
@@ -239,22 +233,124 @@ def daily_loss():
     return loss, net_profit
 
 
-def show_account(snapshot):
+def risk_per_unit(entry, stop):
 
-    print("\n===== DEMO ACCOUNT =====")
-    print("Equity:", snapshot["equity"])
-    print("Available:", snapshot["available"])
-    print("Positions:", len(snapshot["positions"]))
-    print("Pending:", len(snapshot["pending"]))
+    return (
+        abs(entry - stop)
+        + entry * ENTRY_FEE
+        + stop * EXIT_FEE
+        + (entry + stop) * SLIPPAGE
+    )
+
+
+def open_position_risk(snapshot):
+
+    total_risk = 0.0
+
+    active_symbols = {
+        p["symbol"]
+        for p in snapshot["positions"]
+    }
+
+    for symbol in SYMBOLS:
+
+        plans = get_protection_orders(symbol)
+
+        if len(plans) >= 100:
+            raise RuntimeError("Plan pagination required")
+
+        if plans and symbol not in active_symbols:
+            raise RuntimeError(
+                f"Residual protection orders: {symbol}"
+            )
 
     for position in snapshot["positions"]:
 
-        print(
-            position.get("symbol"),
-            position.get("holdSide"),
-            position.get("total"),
-            position.get("unrealizedPL")
+        symbol = position["symbol"]
+
+        if symbol not in CONTRACTS:
+            raise RuntimeError("Unknown active position")
+
+        side = position["holdSide"]
+        size = number(position["total"])
+        entry = number(position["openPriceAvg"])
+
+        if side not in ("long", "short"):
+            raise RuntimeError("Invalid position side")
+
+        if size <= 0 or entry <= 0:
+            raise RuntimeError("Invalid position data")
+
+        plans = get_protection_orders(symbol)
+
+        stops = []
+        targets = []
+
+        for plan in plans:
+
+            if plan.get("holdSide") != side:
+                continue
+
+            if plan.get("planStatus") != "live":
+                continue
+
+            plan_type = plan.get("planType")
+
+            trigger = number(
+                plan.get("triggerPrice") or 0
+            )
+
+            covered_size = number(
+                plan.get("size") or 0
+            )
+
+            if plan_type in ("pos_loss", "pos_profit"):
+                covered_size = size
+
+            if covered_size < size - 1e-8:
+                continue
+
+            if trigger <= 0:
+                continue
+
+            if plan_type in ("loss_plan", "pos_loss"):
+                stops.append(trigger)
+
+            if plan_type in ("profit_plan", "pos_profit"):
+                targets.append(trigger)
+
+        if not stops or not targets:
+            raise RuntimeError(
+                f"Unverified protection: {symbol}"
+            )
+
+        stop = (
+            min(stops)
+            if side == "long"
+            else max(stops)
         )
+
+        risk = size * risk_per_unit(entry, stop)
+
+        unrealized_loss = max(
+            0.0,
+            -number(position["unrealizedPL"])
+        )
+
+        reserved = max(
+            risk,
+            unrealized_loss
+        )
+
+        total_risk += reserved
+
+        print(
+            "OPEN RISK:",
+            symbol,
+            round(reserved, 4)
+        )
+
+    return total_risk
 
 
 def check_candidate(signal, snapshot):
@@ -277,7 +373,7 @@ def check_candidate(signal, snapshot):
         return False, "Pending orders require review"
 
     if any(
-        p.get("symbol") == symbol
+        p["symbol"] == symbol
         for p in snapshot["positions"]
     ):
         return False, "Existing position"
@@ -290,10 +386,10 @@ def check_candidate(signal, snapshot):
     if age < 0 or age >= 900000:
         return False, "Signal expired"
 
-    if number(signal["net_rr"]) < MIN_RR:
+    if number(signal["net_rr"]) + 1e-9 < MIN_RR:
         return False, "Signal RR too low"
 
-    return True, "Basic checks passed"
+    return True, "Approved"
 
 
 def build_order(signal, snapshot, risk_budget):
@@ -301,8 +397,10 @@ def build_order(signal, snapshot, risk_budget):
     symbol = signal["symbol"]
     direction = signal["direction"]
 
-    spec = CONTRACTS[symbol]
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid direction")
 
+    spec = CONTRACTS[symbol]
     account = get_symbol_account(symbol)
 
     if account.get("posMode") != "hedge_mode":
@@ -317,9 +415,6 @@ def build_order(signal, snapshot, risk_budget):
 
     if not 1 <= leverage <= MAX_LEVERAGE:
         raise RuntimeError("Invalid leverage")
-
-    if direction not in ("LONG", "SHORT"):
-        raise RuntimeError("Invalid direction")
 
     is_long = direction == "LONG"
 
@@ -346,38 +441,30 @@ def build_order(signal, snapshot, risk_budget):
     target = number(target_text)
 
     if is_long:
-
         if not 0 < stop < price < target:
             raise RuntimeError("Invalid LONG prices")
-
     else:
-
         if not 0 < target < price < stop:
             raise RuntimeError("Invalid SHORT prices")
 
-    risk_per_unit = (
-        abs(price - stop)
-        + price * ENTRY_FEE
-        + stop * EXIT_FEE
-        + (price + stop) * SLIPPAGE
-    )
+    unit_risk = risk_per_unit(price, stop)
 
-    profit_per_unit = (
+    unit_profit = (
         abs(target - price)
         - price * ENTRY_FEE
         - target * EXIT_FEE
         - (price + target) * SLIPPAGE
     )
 
-    if risk_per_unit <= 0:
-        raise RuntimeError("Invalid risk calculation")
+    if unit_risk <= 0:
+        raise RuntimeError("Invalid unit risk")
 
-    net_rr = profit_per_unit / risk_per_unit
+    net_rr = unit_profit / unit_risk
 
-    if net_rr < MIN_RR:
-        raise RuntimeError("Rounded order RR below minimum")
+    if net_rr + 1e-9 < MIN_RR:
+        raise RuntimeError("Rounded RR below minimum")
 
-    risk_size = risk_budget / risk_per_unit
+    risk_size = risk_budget / unit_risk
 
     margin_size = (
         snapshot["available"] * 0.80
@@ -406,9 +493,9 @@ def build_order(signal, snapshot, risk_budget):
     notional = size * price
 
     if notional < 5:
-        raise RuntimeError("Notional below 5 USDT")
+        raise RuntimeError("Notional below minimum")
 
-    estimated_loss = size * risk_per_unit
+    estimated_loss = size * unit_risk
 
     if estimated_loss > risk_budget + 1e-8:
         raise RuntimeError("Risk budget exceeded")
@@ -419,6 +506,7 @@ def build_order(signal, snapshot, risk_budget):
 
     return {
         "symbol": symbol,
+        "coin": symbol.replace("USDT", ""),
         "direction": direction,
         "size": size_text,
         "price": price_text,
@@ -426,8 +514,9 @@ def build_order(signal, snapshot, risk_budget):
         "target": target_text,
         "client_oid": client_oid,
         "notional": notional,
+        "margin": notional / leverage,
         "estimated_loss": estimated_loss,
-        "net_profit": size * profit_per_unit,
+        "net_profit": size * unit_profit,
         "net_rr": net_rr,
         "leverage": leverage
     }
@@ -452,64 +541,34 @@ def check_duplicate(order):
         raise RuntimeError("Invalid order history")
 
     if "entrustedList" not in result:
-        raise RuntimeError("Order history field missing")
+        raise RuntimeError("Missing order history list")
 
     records = result["entrustedList"] or []
 
     if not isinstance(records, list):
-        raise RuntimeError("Invalid history orders")
+        raise RuntimeError("Invalid order records")
 
     if len(records) >= 100:
-        raise RuntimeError("Order history pagination required")
+        raise RuntimeError("History pagination required")
 
     return any(
-        record.get("clientOid") == order["client_oid"]
-        for record in records
+        r.get("clientOid") == order["client_oid"]
+        for r in records
     )
-
-
-def audit_existing_positions(snapshot):
-
-    print("\n===== EXISTING POSITION AUDIT =====")
-
-    for position in snapshot["positions"]:
-
-        symbol = position["symbol"]
-
-        plans = get_protection_orders(symbol)
-
-        print("Symbol:", symbol)
-        print("Position side:", position.get("holdSide"))
-        print("Position size:", position.get("total"))
-        print("Protection orders:", len(plans))
-
-        print(json.dumps(plans, indent=2))
-
-        send_telegram(
-            "Bitget Demo 持仓检查\n\n"
-            f"币种：{symbol}\n"
-            f"方向：{position.get('holdSide')}\n"
-            f"持仓数量：{position.get('total')}\n"
-            f"保护订单数量：{len(plans)}\n\n"
-            "现有持仓需要检查保护订单。"
-            "暂时禁止新增仓位。"
-        )
-
-    print("NEW ENTRY BLOCKED")
 
 
 def execute_order(order, signal):
 
-    if not EXECUTION_ENABLED:
-        print("Execution disabled")
-        return
-
     if MODE != "auto_trade":
         raise RuntimeError("Invalid execution mode")
 
+    if not EXECUTION_ENABLED:
+        print("ORDER EXECUTION DISABLED")
+        return False
+
     if check_duplicate(order):
         print("DUPLICATE SIGNAL - SKIPPED")
-        return
+        return False
 
     age = (
         int(time.time() * 1000)
@@ -517,10 +576,10 @@ def execute_order(order, signal):
     )
 
     if age < 0 or age >= 900000:
-        print("SIGNAL EXPIRED - SKIPPED")
-        return
+        print("SIGNAL EXPIRED")
+        return False
 
-    print("\n===== ORDER SUBMISSION =====")
+    print("ORDER SUBMISSION")
     print(json.dumps(order, indent=2))
 
     try:
@@ -534,8 +593,6 @@ def execute_order(order, signal):
             order["target"],
             order["client_oid"]
         )
-
-        print("ORDER RESPONSE:", result)
 
         if not isinstance(result, dict):
             raise RuntimeError("Invalid order response")
@@ -572,143 +629,130 @@ def execute_order(order, signal):
 
         print("ORDER DETAIL:", detail)
 
-        state = detail.get("state", "unknown")
+        state = detail.get("state")
 
         if state in ("cancelled", "canceled"):
 
-            filled_size = number(
-                detail.get("baseVolume") or 0
-            )
-
-            if filled_size > 0:
-                raise RuntimeError(
-                    "Cancelled order has executed quantity"
-                )
+            if number(detail.get("baseVolume") or 0) > 0:
+                raise RuntimeError("Unexpected partial fill")
 
             send_telegram(
-                "Bitget Demo 限价订单已取消\n\n"
+                "Bitget Demo 未成交\n\n"
                 f"币种：{order['symbol']}\n"
-                "FOK订单未成交，本轮结束。"
+                f"数量：{order['size']} {order['coin']}\n"
+                f"限价：{order['price']}\n"
+                "原因：FOK限价单已取消。\n"
+                "不追价，本轮结束。"
             )
 
-            print("ORDER CANCELLED")
-            return
+            return False
 
         if state != "filled":
-            raise RuntimeError("Order state uncertain")
+            raise RuntimeError("Uncertain order state")
 
-        print("ORDER FILLED")
+        actual_size = number(detail["baseVolume"])
+        actual_price = number(detail["priceAvg"])
+
+        if abs(actual_size - number(order["size"])) > 1e-8:
+            raise RuntimeError("Unexpected fill size")
 
         protection = verify_protection(order)
 
-        print("PROTECTION RESULT:", protection)
-
         if not protection.get("verified"):
+            raise RuntimeError("Protection not verified")
 
-            send_telegram(
-                "🚨 Bitget Demo 风险警报\n\n"
-                f"币种：{order['symbol']}\n"
-                f"方向：{order['direction']}\n"
-                "订单已经成交，但无法确认完整止盈止损。\n"
-                "请立即检查模拟盘持仓及保护订单。\n"
-                "本轮停止交易。"
+        actual_notional = actual_size * actual_price
+
+        actual_risk = actual_size * risk_per_unit(
+            actual_price,
+            number(order["stop"])
+        )
+
+        if order["direction"] == "LONG":
+            valid_prices = (
+                number(order["stop"])
+                < actual_price
+                < number(order["target"])
+            )
+        else:
+            valid_prices = (
+                number(order["target"])
+                < actual_price
+                < number(order["stop"])
             )
 
-            raise RuntimeError(
-                "Protection verification failed"
-            )
+        if not valid_prices:
+            raise RuntimeError("Unexpected fill price")
+
+        if actual_risk > MAX_RISK + 1e-8:
+            raise RuntimeError("Filled risk exceeds limit")
 
         message = (
-            "✅ Bitget Demo 成交及保护确认\n\n"
+            "Bitget Demo 自动开仓成功\n\n"
             f"策略：{signal['strategy']}\n"
             f"币种：{order['symbol']}\n"
             f"方向：{order['direction']}\n"
-            f"杠杆：{order['leverage']}x\n"
-            f"数量：{order['size']}\n"
-            f"委托限价：{order['price']}\n"
-            f"实际均价：{detail.get('priceAvg', 'unknown')}\n"
+            f"开仓数量：{actual_size} {order['coin']}\n"
+            f"实际成交价：{actual_price}\n"
+            f"杠杆：{order['leverage']:g}x\n"
+            "保证金模式：全仓 Cross\n"
+            f"名义仓位：{actual_notional:.2f} U\n"
+            f"估算初始保证金："
+            f"{actual_notional / order['leverage']:.2f} U\n\n"
             f"止损：{order['stop']}\n"
             f"止盈：{order['target']}\n"
-            f"计划名义仓位：{order['notional']:.2f} U\n"
-            f"计划风险：{order['estimated_loss']:.2f} U\n"
-            f"预计净利润：{order['net_profit']:.2f} U\n"
-            f"计划净盈亏比：1:{order['net_rr']:.2f}\n"
-            f"订单编号：{order_id}\n\n"
-            "订单状态：已成交\n"
-            "止损：已查询确认\n"
-            "止盈：已查询确认\n"
-            "账户类型：模拟盘"
+            f"估算止损风险：{actual_risk:.2f} U\n"
+            f"计划净利润：{order['net_profit']:.2f} U\n"
+            f"计划盈亏比：1:{order['net_rr']:.2f}\n\n"
+            "成交状态：已确认\n"
+            "止盈止损：已查询确认\n"
+            "账户：模拟盘 Demo\n"
+            f"订单编号：{order_id}"
         )
 
         send_telegram(message)
 
         print("TRADE AND PROTECTION VERIFIED")
 
-    except Exception as error:
+        return True
 
-        print("ORDER STATUS REQUIRES REVIEW")
+    except Exception:
 
         send_telegram(
-            "🚨 Bitget Demo 订单异常\n\n"
+            "Bitget Demo 订单异常警报\n\n"
             f"币种：{order['symbol']}\n"
             f"Client ID：{order['client_oid']}\n"
-            "请检查交易所订单、持仓及止盈止损。\n"
-            "程序不会在本轮自动重试。"
+            "订单可能已提交或成交。\n"
+            "请立即检查持仓及止盈止损。\n"
+            "本轮停止，不自动重试。"
         )
 
-        raise RuntimeError(
-            "Execution halted for manual review"
-        ) from error
+        raise
 
 
 def scan_market():
 
-    print("\n===== MARKET SCAN =====")
-
     snapshot = account_snapshot()
 
-    if snapshot["positions"]:
-
-        audit_existing_positions(snapshot)
-
-        return
-
     if snapshot["pending"]:
-
-        print("PENDING ORDERS - NO NEW ENTRY")
-
+        print("PENDING ORDERS - BLOCKED")
         return
 
-    for symbol in SYMBOLS:
+    realized_loss, _ = daily_loss()
+    reserved_risk = open_position_risk(snapshot)
 
-        plans = get_protection_orders(symbol)
+    remaining = (
+        MAX_DAILY_LOSS
+        - realized_loss
+        - reserved_risk
+    )
 
-        if plans:
+    print("REALIZED LOSS:", realized_loss)
+    print("OPEN RISK:", reserved_risk)
+    print("REMAINING RISK:", remaining)
 
-            print("EXISTING PLAN ORDERS:", symbol)
-
-            send_telegram(
-                "发现已有保护订单或残留计划订单，"
-                "暂停开仓，请检查模拟盘。"
-            )
-
-            return
-
-    loss, net_profit = daily_loss()
-
-    print("Daily realized losses:", loss)
-    print("Daily net profit:", net_profit)
-
-    if loss >= MAX_DAILY_LOSS:
-
-        print("DAILY LOSS LIMIT REACHED")
-
-        send_telegram(
-            "Bitget Demo 每日亏损熔断："
-            f"{loss:.2f} U。\n"
-            "停止新增仓位。"
-        )
-
+    if remaining <= 0:
+        print("DAILY RISK LIMIT REACHED")
         return
 
     candidates = []
@@ -716,10 +760,10 @@ def scan_market():
     for symbol in SYMBOLS:
 
         candles = get_candles(symbol)
-
         signal = analyze_signal(symbol, candles)
 
         if signal is None:
+            print(symbol, "NO SIGNAL")
             continue
 
         approved, reason = check_candidate(
@@ -732,47 +776,19 @@ def scan_market():
         if approved:
             candidates.append(signal)
 
-    priority = {
-        "A": 0,
-        "B": 1,
-        "C": 2
-    }
+    priority = {"A": 0, "B": 1, "C": 2}
 
     candidates.sort(
         key=lambda s: priority.get(s["strategy"], 99)
     )
 
     if not candidates:
-
         print("NO ELIGIBLE CANDIDATES")
-        print("No orders were placed.")
-
         return
 
     for signal in candidates:
 
         snapshot = account_snapshot()
-
-        if snapshot["positions"] or snapshot["pending"]:
-
-            print("Account changed - entry halted")
-
-            return
-
-        loss, net_profit = daily_loss()
-
-        remaining = MAX_DAILY_LOSS - loss
-
-        risk_budget = min(
-            MAX_RISK,
-            remaining
-        )
-
-        if risk_budget <= 0:
-
-            print("No remaining daily risk budget")
-
-            return
 
         approved, reason = check_candidate(
             signal,
@@ -780,10 +796,23 @@ def scan_market():
         )
 
         if not approved:
-
             print("SKIPPED:", reason)
-
             continue
+
+        realized_loss, _ = daily_loss()
+        reserved_risk = open_position_risk(snapshot)
+
+        remaining = (
+            MAX_DAILY_LOSS
+            - realized_loss
+            - reserved_risk
+        )
+
+        risk_budget = min(MAX_RISK, remaining)
+
+        if risk_budget <= 0:
+            print("NO REMAINING RISK BUDGET")
+            return
 
         try:
 
@@ -795,16 +824,20 @@ def scan_market():
 
         except RuntimeError as error:
 
-            print(
-                signal["symbol"],
-                "ORDER SKIPPED:",
-                str(error)
+            print("ORDER SKIPPED:", str(error))
+
+            send_telegram(
+                "Bitget Demo 未开仓\n\n"
+                f"币种：{signal['symbol']}\n"
+                f"原因：{error}"
             )
 
             continue
 
         execute_order(order, signal)
 
+        # 每轮最多尝试一笔订单。
+        # 下一轮重新检查账户及风险。
         return
 
     print("NO EXECUTABLE ORDERS")
@@ -813,30 +846,26 @@ def scan_market():
 def report(snapshot):
 
     loss, net_profit = daily_loss()
-
     equity = snapshot["equity"]
 
     difference = equity - CAPITAL
-
     percentage = difference / CAPITAL * 100
 
     message = (
-        "📊 Bitget Demo 账户报告\n\n"
-        f"初始参考本金：{CAPITAL:.2f} U\n"
+        "Bitget Demo 账户报告\n\n"
+        f"初始本金：{CAPITAL:.2f} U\n"
         f"当前权益：{equity:.2f} U\n"
         f"可用余额：{snapshot['available']:.2f} U\n"
         f"权益变化：{difference:+.2f} U\n"
-        f"权益变化率：{percentage:+.2f}%\n"
+        f"收益率：{percentage:+.2f}%\n"
         f"今日已平仓净收益：{net_profit:+.2f} U\n"
         f"今日累计亏损：{loss:.2f} U\n"
         f"当前持仓：{len(snapshot['positions'])}\n"
         f"普通挂单：{len(snapshot['pending'])}\n\n"
-        "每日统计按UTC零点重置。\n"
-        "权益变化包含浮动盈亏及资金调整。"
+        "每日统计按UTC零点重置。"
     )
 
     print(message)
-
     send_telegram(message)
 
 
@@ -849,26 +878,27 @@ def main():
     print("STRATEGY VERSION:", VERSION)
     print("TRADER MODE:", MODE)
     print("ORDER EXECUTION:", EXECUTION_ENABLED)
-    print("PROTECTION VERIFICATION: ENABLED")
-
-    print("Capital:", CAPITAL)
-    print("Maximum planned risk:", MAX_RISK)
-    print("Daily planned loss limit:", MAX_DAILY_LOSS)
-    print("Leverage ceiling:", MAX_LEVERAGE)
-    print("Configured maximum positions:", MAX_POSITIONS)
-    print("Current validation position limit: 1")
-    print("Minimum net RR:", MIN_RR)
+    print("CAPITAL:", CAPITAL)
+    print("MAX RISK:", MAX_RISK)
+    print("MAX DAILY LOSS:", MAX_DAILY_LOSS)
+    print("MAX POSITIONS:", MAX_POSITIONS)
+    print("MAX LEVERAGE:", MAX_LEVERAGE)
 
     snapshot = account_snapshot()
 
-    show_account(snapshot)
+    print("EQUITY:", snapshot["equity"])
+    print("AVAILABLE:", snapshot["available"])
+    print("POSITIONS:", len(snapshot["positions"]))
+    print("PENDING:", len(snapshot["pending"]))
 
     if MODE == "check":
 
         loss, net_profit = daily_loss()
+        reserved = open_position_risk(snapshot)
 
-        print("Daily realized losses:", loss)
-        print("Daily net profit:", net_profit)
+        print("DAILY LOSS:", loss)
+        print("DAILY NET PROFIT:", net_profit)
+        print("OPEN RISK:", reserved)
         print("ACCOUNT CHECK PASSED")
         print("No orders were placed.")
 
@@ -884,14 +914,13 @@ def main():
 if __name__ == "__main__":
 
     try:
-
         main()
 
     except Exception:
 
         send_telegram(
-            "Bitget Demo Trader 运行异常，"
-            "本轮程序已停止。请检查 GitHub 日志。"
+            "Bitget Demo Trader 运行异常。\n"
+            "本轮停止交易，请检查GitHub日志。"
         )
 
         raise
