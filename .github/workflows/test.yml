@@ -61,3 +61,8 @@ jobs:
       - name: Order Construction and Safety Test
         run: |
           python -m unittest -v test_trader
+
+      - name: Dynamic Contract API Test
+        run: |
+          python -m py_compile contracts.py
+          python -u contracts.py
