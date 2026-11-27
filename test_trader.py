@@ -958,6 +958,162 @@ class TraderTests(unittest.TestCase):
             "Target exceeds market profit space"
         ):
             trader.build_order(signal, self.snapshot, 5.0)
+    def test_stop_modification_success(self):
+
+        for plan_type in ("loss_plan", "pos_loss"):
+
+            with self.subTest(plan_type=plan_type):
+
+                record = {
+                    "symbol": "BTCUSDT",
+                    "direction": "LONG",
+                    "breakeven_activated": False,
+                    "breakeven_price": 60150.0,
+                    "current_stop": 59800.0,
+                    "remaining_size": 0.01,
+                    "stop_order_ids": ["STOP-1"],
+                    "status": "ACTIVE"
+                }
+
+                position = {
+                    "symbol": "BTCUSDT",
+                    "holdSide": "long",
+                    "total": "0.005",
+                    "markPrice": "61000"
+                }
+
+                plans = [{
+                    "symbol": "BTCUSDT",
+                    "holdSide": "long",
+                    "planStatus": "live",
+                    "tradeSide": "close",
+                    "planType": plan_type,
+                    "orderId": "STOP-1",
+                    "triggerType": "fill_price",
+                    "triggerPrice": "59800"
+                }]
+
+                with patch("trader.MODE", "auto_trade"), \
+                     patch("trader.EXECUTION_ENABLED", True), \
+                     patch("trader.confirm_tp1_fill", return_value=True), \
+                     patch("trader.get_protection_orders", return_value=plans), \
+                     patch("trader.modify_stop_loss", return_value={"orderId": "STOP-1"}) as modify, \
+                     patch("trader.verify_protection", return_value={
+                         "verified": True,
+                         "stop_ids": ["STOP-1"]
+                     }):
+
+                    result = trader.activate_breakeven(
+                        record, position
+                    )
+
+                    self.assertTrue(result)
+
+                    modify.assert_called_once_with(
+                        "BTCUSDT",
+                        "LONG",
+                        "STOP-1",
+                        59800.0,
+                        "60150.0",
+                        0.005,
+                        plan_type
+                    )
+
+                    self.assertEqual(
+                        record["remaining_size"], 0.005
+                    )
+
+                    self.assertEqual(
+                        record["current_stop"], 60150.0
+                    )
+
+                    self.assertEqual(
+                        record["status"], "BREAKEVEN"
+                    )
+
+                    self.assertTrue(
+                        record["breakeven_activated"]
+                    )
+
+    def test_stop_modification_failure(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "breakeven_activated": False,
+            "breakeven_price": 60150.0,
+            "current_stop": 59800.0,
+            "remaining_size": 0.01,
+            "stop_order_ids": ["STOP-1"],
+            "status": "ACTIVE"
+        }
+
+        position = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "total": "0.005",
+            "markPrice": "61000"
+        }
+
+        plans = [{
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "planStatus": "live",
+            "tradeSide": "close",
+            "planType": "loss_plan",
+            "orderId": "STOP-1",
+            "triggerType": "fill_price",
+            "triggerPrice": "59800"
+        }]
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", True), \
+             patch("trader.confirm_tp1_fill", return_value=True), \
+             patch("trader.get_protection_orders", return_value=plans), \
+             patch("trader.modify_stop_loss", side_effect=RuntimeError("API rejected")), \
+             patch("trader.verify_protection") as verify:
+
+            with self.assertRaisesRegex(
+                RuntimeError, "API rejected"
+            ):
+                trader.activate_breakeven(
+                    record, position
+                )
+
+            verify.assert_not_called()
+
+            self.assertFalse(
+                record["breakeven_activated"]
+            )
+
+            self.assertEqual(
+                record["current_stop"], 59800.0
+            )
+
+            self.assertEqual(
+                record["status"], "ACTIVE"
+            )
+
+    def test_closed_position_requires_history(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "initial_size": 0.01,
+            "opened_at": "2026-11-27T12:00:00+00:00"
+        }
+
+        with patch(
+            "trader.get_history_positions",
+            return_value={"list": []}
+        ):
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Closed position history not uniquely confirmed"
+            ):
+
+                trader.confirm_position_closed(record)
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
