@@ -418,6 +418,46 @@ def modify_stop_loss(
         "/api/v2/mix/order/modify-tpsl-order",
         body
     )
+def get_history_protection_orders(symbol, start_time):
+
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid symbol")
+
+    result = demo_get(
+        "/api/v2/mix/order/orders-plan-history",
+        {
+            "symbol": symbol,
+            "productType": PRODUCT_TYPE,
+            "planType": "profit_loss",
+            "startTime": str(start_time),
+            "endTime": str(int(time.time() * 1000)),
+            "limit": "100"
+        }
+    )
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Invalid protection history response"
+        )
+
+    if "entrustedList" not in result:
+        raise RuntimeError(
+            "Missing protection history list"
+        )
+
+    records = result["entrustedList"] or []
+
+    if not isinstance(records, list):
+        raise RuntimeError(
+            "Invalid protection history records"
+        )
+
+    if len(records) >= 100:
+        raise RuntimeError(
+            "Protection history pagination required"
+        )
+
+    return records
 def test_post():
 
     account = get_symbol_account("BTCUSDT")
