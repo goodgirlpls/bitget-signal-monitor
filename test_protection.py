@@ -511,7 +511,95 @@ class ProtectionTests(unittest.TestCase):
 
         self.assertFalse(result["verified"])
 
+    def test_initial_stop_only(self):
 
+        self.order["target_size"] = "0"
+
+        result = self.verify([
+            self.stop
+        ])
+
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["stop_verified"])
+
+
+    def test_valid_partial_take_profit(self):
+
+        self.order["target_size"] = "0.005"
+        self.target["size"] = "0.005"
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["stop_verified"])
+        self.assertTrue(result["target_verified"])
+
+
+    def test_remaining_position_protection(self):
+
+        self.order["size"] = "0.005"
+        self.order["target_size"] = "0"
+        self.order["stop"] = "60133"
+
+        self.position["total"] = "0.005"
+
+        self.stop["planType"] = "pos_loss"
+        self.stop["size"] = ""
+        self.stop["triggerPrice"] = "60133"
+
+        result = self.verify([
+            self.stop
+        ])
+
+        self.assertTrue(result["verified"])
+
+
+    def test_wrong_partial_take_profit_size(self):
+
+        self.order["target_size"] = "0.005"
+        self.target["size"] = "0.006"
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertFalse(result["verified"])
+
+
+    def test_insufficient_remaining_stop(self):
+
+        self.order["size"] = "0.005"
+        self.order["target_size"] = "0"
+
+        self.position["total"] = "0.005"
+        self.stop["size"] = "0.002"
+
+        result = self.verify([
+            self.stop
+        ])
+
+        self.assertFalse(result["verified"])
+
+
+    def test_unexpected_target_after_tp1(self):
+
+        self.order["size"] = "0.005"
+        self.order["target_size"] = "0"
+
+        self.position["total"] = "0.005"
+        self.stop["size"] = "0.005"
+        self.target["size"] = "0.005"
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertFalse(result["verified"])
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
