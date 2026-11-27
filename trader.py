@@ -484,7 +484,7 @@ def build_order(signal, snapshot, risk_budget):
     if unit_risk <= 0:
         raise RuntimeError("Invalid unit risk")
 
-      net_rr = unit_profit / unit_risk
+    net_rr = unit_profit / unit_risk
 
     required_rr = STRATEGY_MIN_RR[
         signal["strategy"]
