@@ -766,7 +766,9 @@ def main():
                     f"已检测：\n"
                     f"A. 均线密集突破\n"
                     f"B. 首次EMA20回踩\n"
-                    f"C. BOS结构突破"
+                    f"C. BOS结构突破\n"
+                    f"D. 纽约开盘区间突破（ORB）\n\n"
+                    f"策略D状态：{get_orb_status(symbol)}"
                 )
 
                 send_telegram(symbol, message)
@@ -813,6 +815,44 @@ ORB_RETEST_TOLERANCE = 0.0005
 ORB_SIGNAL_MAX_AGE_MS = 60000
 
 ABC_ANALYZE_SIGNAL = analyze_signal
+
+ORB_STATUS = {}
+
+
+def set_orb_status(symbol, status):
+
+    ORB_STATUS[symbol] = status
+
+    print("ORB:", status)
+
+
+def get_orb_status(symbol):
+
+    return ORB_STATUS.get(
+        symbol,
+        "尚未完成检测"
+    )
+
+
+def orb_session_status():
+
+    now = datetime.now(NY_TZ)
+
+    minutes = now.hour * 60 + now.minute
+
+    if now.weekday() >= 5:
+        return "周末暂停检测"
+
+    if minutes < 570:
+        return "等待纽约开盘"
+
+    if minutes < 575:
+        return "正在建立开盘区间"
+
+    if minutes >= 630:
+        return "今日ORB交易窗口已结束"
+
+    return "交易窗口开放，等待检测"
 
 
 def get_multi_candles(symbol, granularity):
@@ -1248,15 +1288,38 @@ def analyze_orb(symbol):
 
 def analyze_signal(symbol, candles):
 
+    set_orb_status(
+        symbol,
+        orb_session_status()
+    )
+
     if orb_session() is not None:
 
         try:
+
             orb_signal = analyze_orb(symbol)
 
             if orb_signal is not None:
+
+                set_orb_status(
+                    symbol,
+                    "发现策略D候选信号"
+                )
+
                 return orb_signal
 
+            set_orb_status(
+                symbol,
+                "已检测，暂无符合条件的信号"
+            )
+
         except Exception as error:
+
+            set_orb_status(
+                symbol,
+                "检测失败，行情接口或数据异常"
+            )
+
             print(
                 "ORB SCAN FAILED:",
                 symbol,
