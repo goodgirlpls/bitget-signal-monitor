@@ -1,9 +1,9 @@
-
 name: Bitget Demo Trader
 
 on:
   schedule:
     - cron: "7,22,37,52 * * * *"
+    - cron: "30 13,14 * * 1-5"
 
   workflow_dispatch:
     inputs:
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   trader:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -46,4 +46,63 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TRADER_MODE: ${{ github.event_name == 'schedule' && 'auto_trade' || inputs.mode }}
-        run: python trader.py
+
+        run: |
+          python -u - <<'PY'
+          import os
+          import time
+          import subprocess
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          ny = ZoneInfo("America/New_York")
+
+          def run_trader():
+              subprocess.run(
+                  ["python", "-u", "trader.py"],
+                  check=True
+              )
+
+          def in_orb_session():
+              now = datetime.now(ny)
+              minutes = now.hour * 60 + now.minute
+
+              return (
+                  now.weekday() < 5
+                  and 570 <= minutes < 630
+              )
+
+          mode = os.environ.get("TRADER_MODE")
+
+          if mode != "auto_trade":
+              run_trader()
+
+          elif in_orb_session():
+              print("ORB SESSION ACTIVE")
+
+              while in_orb_session():
+                  started = time.time()
+
+                  print(
+                      "NEW YORK:",
+                      datetime.now(ny).isoformat()
+                  )
+
+                  print(
+                      "GERMANY:",
+                      datetime.now(
+                          ZoneInfo("Europe/Berlin")
+                      ).isoformat()
+                  )
+
+                  run_trader()
+
+                  elapsed = time.time() - started
+
+                  time.sleep(max(1, 60 - elapsed))
+
+              print("ORB SESSION FINISHED")
+
+          else:
+              run_trader()
+          PY
