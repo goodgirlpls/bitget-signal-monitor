@@ -1796,7 +1796,7 @@ def confirm_position_closed(record):
         ):
             continue
 
-                history_entry = number(
+        history_entry = number(
             item.get("openAvgPrice") or 0
         )
 
