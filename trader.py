@@ -19,13 +19,21 @@ from monitor import (
     MAX_DAILY_LOSS,
     MAX_LEVERAGE,
     MAX_POSITIONS,
-    MIN_RR,
-    ENTRY_FEE,
-    EXIT_FEE,
-    SLIPPAGE,
     VERSION
 )
 
+from risk import (
+    ENTRY_FEE,
+    EXIT_FEE,
+    SLIPPAGE,
+    MIN_RR,
+    ORB_MIN_RR,
+    build_risk_plan,
+    risk_per_unit,
+    profit_per_unit,
+    calculate_rr,
+    calculate_target
+)
 from execution import (
     demo_get,
     get_symbol_account,
@@ -52,7 +60,7 @@ STRATEGY_MIN_RR = {
     "A": MIN_RR,
     "B": MIN_RR,
     "C": MIN_RR,
-    "D": 2.0
+    "D": ORB_MIN_RR
 }
 
 PRODUCT_TYPE = "USDT-FUTURES"
@@ -247,14 +255,7 @@ def daily_loss():
     return loss, net_profit
 
 
-def risk_per_unit(entry, stop):
 
-    return (
-        abs(entry - stop)
-        + entry * ENTRY_FEE
-        + stop * EXIT_FEE
-        + (entry + stop) * SLIPPAGE
-    )
 
 
 def open_position_risk(snapshot):
@@ -431,6 +432,7 @@ def build_order(signal, snapshot, risk_budget):
 
     symbol = signal["symbol"]
     direction = signal["direction"]
+    strategy = signal["strategy"]
 
     if direction not in ("LONG", "SHORT"):
         raise RuntimeError("Invalid direction")
@@ -453,6 +455,8 @@ def build_order(signal, snapshot, risk_budget):
 
     is_long = direction == "LONG"
 
+    required_rr = STRATEGY_MIN_RR[strategy]
+
     price_text = round_step(
         signal["entry"],
         spec["price_step"],
@@ -465,47 +469,9 @@ def build_order(signal, snapshot, risk_budget):
         upward=not is_long
     )
 
-    target_text = round_step(
-        signal["target"],
-        spec["price_step"],
-        upward=is_long
-    )
-
     price = number(price_text)
     stop = number(stop_text)
-    target = number(target_text)
 
-    if is_long:
-        if not 0 < stop < price < target:
-            raise RuntimeError("Invalid LONG prices")
-    else:
-        if not 0 < target < price < stop:
-            raise RuntimeError("Invalid SHORT prices")
-
-    unit_risk = risk_per_unit(price, stop)
-
-    unit_profit = (
-        abs(target - price)
-        - price * ENTRY_FEE
-        - target * EXIT_FEE
-        - (price + target) * SLIPPAGE
-    )
-
-    if unit_risk <= 0:
-        raise RuntimeError("Invalid unit risk")
-
-    net_rr = unit_profit / unit_risk
-
-    required_rr = STRATEGY_MIN_RR[
-        signal["strategy"]
-    ]
-
-    if net_rr + 1e-9 < required_rr:
-        raise RuntimeError(
-            "Rounded RR below strategy minimum"
-        )
-
-    risk_size = risk_budget / unit_risk
     margin_size = (
         snapshot["available"] * 0.80
         / (
@@ -514,9 +480,52 @@ def build_order(signal, snapshot, risk_budget):
         )
     )
 
+    try:
+
+        plan = build_risk_plan(
+            entry=price,
+            stop=stop,
+            direction=direction,
+            risk_budget=risk_budget,
+            max_notional=margin_size * price,
+            required_rr=required_rr
+        )
+
+        target_text = round_step(
+            plan["target"],
+            spec["price_step"],
+            upward=is_long
+        )
+
+        target = number(target_text)
+
+        unit_risk = risk_per_unit(
+            price, stop
+        )
+
+        unit_profit = profit_per_unit(
+            price, target
+        )
+
+        net_rr = calculate_rr(
+            price,
+            stop,
+            target,
+            direction
+        )
+
+    except ValueError as error:
+        raise RuntimeError(
+            f"Risk plan rejected: {error}"
+        ) from error
+
+    if net_rr + 1e-9 < required_rr:
+        raise RuntimeError(
+            "Rounded RR below strategy minimum"
+        )
+
     quantity = min(
-        risk_size,
-        margin_size,
+        plan["quantity"],
         number(signal["quantity"])
     )
 
@@ -557,7 +566,7 @@ def build_order(signal, snapshot, risk_budget):
         "margin": notional / leverage,
         "estimated_loss": estimated_loss,
         "risk_budget": risk_budget,
-        "strategy": signal["strategy"],
+        "strategy": strategy,
         "signal_id": signal["signal_id"],
         "net_profit": size * unit_profit,
         "net_rr": net_rr,
@@ -736,6 +745,21 @@ def execute_order(order, signal):
         if not valid_prices:
             raise RuntimeError("Unexpected fill price")
 
+        actual_net_profit = actual_size * profit_per_unit(
+            actual_price,
+            number(order["target"])
+        )
+
+        actual_net_rr = calculate_rr(
+            actual_price,
+            number(order["stop"]),
+            number(order["target"]),
+            order["direction"]
+        )
+
+        print("ACTUAL ESTIMATED PROFIT:", actual_net_profit)
+        print("ACTUAL NET RR:", actual_net_rr)
+
         allowed_risk = min(
             MAX_RISK,
             number(order["risk_budget"])
@@ -763,7 +787,9 @@ def execute_order(order, signal):
             f"止盈：{order['target']}\n"
             f"估算止损风险：{actual_risk:.2f} U\n"
             f"计划净利润：{order['net_profit']:.2f} U\n"
-            f"计划盈亏比：1:{order['net_rr']:.2f}\n\n"
+            f"计划盈亏比：1:{order['net_rr']:.2f}\n"
+            f"成交后预计净利润：{actual_net_profit:.2f} U\n"
+            f"成交后预计盈亏比：1:{actual_net_rr:.2f}\n\n"
             "成交状态：已确认\n"
             "止盈止损：已查询确认\n"
             "账户：模拟盘 Demo\n"
