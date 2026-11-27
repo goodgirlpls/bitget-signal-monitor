@@ -459,6 +459,59 @@ class ProtectionTests(unittest.TestCase):
         self.assertFalse(result["verified"])
 
 
+    def test_matching_size_fields(self):
+
+        self.stop["baseVolume"] = "0.01"
+        self.target["baseVolume"] = "0.01"
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertTrue(result["verified"])
+
+    def test_conflicting_size_fields(self):
+
+        self.stop["baseVolume"] = "0.02"
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Conflicting protection order sizes"
+        ):
+
+            self.verify([
+                self.stop,
+                self.target
+            ])
+
+    def test_empty_size_with_base_volume(self):
+
+        self.stop["size"] = ""
+        self.stop["baseVolume"] = "0.01"
+
+        self.target["size"] = ""
+        self.target["baseVolume"] = "0.01"
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertTrue(result["verified"])
+
+    def test_missing_both_size_fields(self):
+
+        self.stop.pop("size")
+
+        result = self.verify([
+            self.stop,
+            self.target
+        ])
+
+        self.assertFalse(result["verified"])
+
+
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
