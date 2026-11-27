@@ -251,6 +251,8 @@ def open_position_risk(snapshot):
         for p in snapshot["positions"]
     }
 
+    protection_cache = {}
+
     for symbol in SYMBOLS:
 
         plans = get_protection_orders(symbol)
@@ -262,6 +264,8 @@ def open_position_risk(snapshot):
             raise RuntimeError(
                 f"Residual protection orders: {symbol}"
             )
+
+        protection_cache[symbol] = plans
 
     for position in snapshot["positions"]:
 
@@ -280,26 +284,37 @@ def open_position_risk(snapshot):
         if size <= 0 or entry <= 0:
             raise RuntimeError("Invalid position data")
 
-        plans = get_protection_orders(symbol)
+        plans = protection_cache[symbol]
 
         stops = []
         targets = []
+        stop_size = 0.0
+        target_size = 0.0
+        seen_ids = set()
 
         for plan in plans:
 
-            plan_side = plan.get("holdSide")
-            pos_side = plan.get("posSide")
+            if plan.get("symbol") != symbol:
+                continue
 
-            if plan_side and pos_side and plan_side != pos_side:
-                raise RuntimeError("Conflicting protection sides")
-
-            plan_side = plan_side or pos_side
-
-            if plan_side != side:
+            if plan.get("holdSide") != side:
                 continue
 
             if plan.get("planStatus") != "live":
                 continue
+
+            if plan.get("tradeSide") != "close":
+                continue
+
+            order_id = plan.get("orderId")
+
+            if not order_id:
+                raise RuntimeError("Missing protection ID")
+
+            if order_id in seen_ids:
+                continue
+
+            seen_ids.add(order_id)
 
             plan_type = plan.get("planType")
 
@@ -307,30 +322,63 @@ def open_position_risk(snapshot):
                 plan.get("triggerPrice") or 0
             )
 
-            covered_size = number(
-                plan.get("size")
-                or plan.get("baseVolume")
-                or 0
-            )
+            raw_size = plan.get("size")
+            raw_base_volume = plan.get("baseVolume")
+
+            if raw_size in (None, ""):
+                raw_size = raw_base_volume
+
+            elif raw_base_volume not in (None, ""):
+
+                if not math.isclose(
+                    number(raw_size),
+                    number(raw_base_volume),
+                    rel_tol=0,
+                    abs_tol=1e-8
+                ):
+                    raise RuntimeError(
+                        "Conflicting protection order sizes"
+                    )
+
+            covered_size = number(raw_size or 0)
 
             if plan_type in ("pos_loss", "pos_profit"):
                 covered_size = size
 
-            if covered_size < size - 1e-8:
-                continue
-
-            if trigger <= 0:
+            if covered_size <= 0 or trigger <= 0:
                 continue
 
             if plan_type in ("loss_plan", "pos_loss"):
                 stops.append(trigger)
+                stop_size += covered_size
 
-            if plan_type in ("profit_plan", "pos_profit"):
+            elif plan_type in ("profit_plan", "pos_profit"):
                 targets.append(trigger)
+                target_size += covered_size
 
         if not stops or not targets:
             raise RuntimeError(
                 f"Unverified protection: {symbol}"
+            )
+
+        if not math.isclose(
+            stop_size,
+            size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
+            raise RuntimeError(
+                f"Invalid stop coverage: {symbol}"
+            )
+
+        if not math.isclose(
+            target_size,
+            size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
+            raise RuntimeError(
+                f"Invalid target coverage: {symbol}"
             )
 
         stop = (
@@ -346,10 +394,7 @@ def open_position_risk(snapshot):
             -number(position["unrealizedPL"])
         )
 
-        reserved = max(
-            risk,
-            unrealized_loss
-        )
+        reserved = max(risk, unrealized_loss)
 
         total_risk += reserved
 
@@ -659,23 +704,78 @@ def execute_order(order, signal):
 
     try:
 
-        result = place_order(
-            order["symbol"],
-            order["direction"],
-            order["size"],
-            order["price"],
-            order["stop"],
-            order["target"],
-            order["client_oid"]
-        )
+        order_id = None
 
-        if not isinstance(result, dict):
-            raise RuntimeError("Invalid order response")
+        try:
 
-        order_id = result.get("orderId")
+            result = place_order(
+                order["symbol"],
+                order["direction"],
+                order["size"],
+                order["price"],
+                order["stop"],
+                order["target"],
+                order["client_oid"]
+            )
 
-        if not order_id:
-            raise RuntimeError("Order ID missing")
+            if not isinstance(result, dict):
+                raise RuntimeError("Invalid order response")
+
+            order_id = result.get("orderId")
+
+            if not order_id:
+                raise RuntimeError("Order ID missing")
+
+        except Exception as error:
+
+            print("ORDER SUBMISSION UNCERTAIN:", str(error))
+
+            for attempt in range(5):
+
+                time.sleep(2)
+
+                try:
+
+                    recovered = demo_get(
+                        "/api/v2/mix/order/detail",
+                        {
+                            "symbol": order["symbol"],
+                            "productType": PRODUCT_TYPE,
+                            "clientOid": order["client_oid"]
+                        }
+                    )
+
+                    if (
+                        isinstance(recovered, dict)
+                        and recovered.get("orderId")
+                        and recovered.get("clientOid")
+                        == order["client_oid"]
+                        and recovered.get("symbol")
+                        == order["symbol"]
+                    ):
+
+                        order_id = recovered["orderId"]
+
+                        print(
+                            "ORDER RECOVERED:",
+                            order_id
+                        )
+
+                        break
+
+                except Exception:
+
+                    print(
+                        "ORDER RECOVERY ATTEMPT:",
+                        attempt + 1
+                    )
+
+            if not order_id:
+                raise RuntimeError(
+                    "Order status unresolved. "
+                    "Manual review required. "
+                    "No automatic retry."
+                ) from error
 
         detail = None
 
@@ -728,7 +828,20 @@ def execute_order(order, signal):
         actual_size = number(detail["baseVolume"])
         actual_price = number(detail["priceAvg"])
 
-        if abs(actual_size - number(order["size"])) > 1e-8:
+        expected_size = number(order["size"])
+        limit_price = number(order["price"])
+        stop_price = number(order["stop"])
+        target_price = number(order["target"])
+
+        if actual_size <= 0 or actual_price <= 0:
+            raise RuntimeError("Invalid fill data")
+
+        if not math.isclose(
+            actual_size,
+            expected_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
             raise RuntimeError("Unexpected fill size")
 
         protection = verify_protection(order)
@@ -736,43 +849,48 @@ def execute_order(order, signal):
         if not protection.get("verified"):
             raise RuntimeError("Protection not verified")
 
-        actual_notional = actual_size * actual_price
-
-        actual_risk = actual_size * risk_per_unit(
-            actual_price,
-            number(order["stop"])
-        )
-
         if order["direction"] == "LONG":
+
+            if actual_price > limit_price + 1e-8:
+                raise RuntimeError("Fill exceeds LONG limit")
+
             valid_prices = (
-                number(order["stop"])
-                < actual_price
-                < number(order["target"])
+                stop_price < actual_price < target_price
             )
+
+        elif order["direction"] == "SHORT":
+
+            if actual_price < limit_price - 1e-8:
+                raise RuntimeError("Fill below SHORT limit")
+
+            valid_prices = (
+                target_price < actual_price < stop_price
+            )
+
         else:
-            valid_prices = (
-                number(order["target"])
-                < actual_price
-                < number(order["stop"])
-            )
+            raise RuntimeError("Invalid direction")
 
         if not valid_prices:
             raise RuntimeError("Unexpected fill price")
 
+        actual_notional = actual_size * actual_price
+
+        actual_risk = actual_size * risk_per_unit(
+            actual_price,
+            stop_price
+        )
+
         actual_net_profit = actual_size * profit_per_unit(
             actual_price,
-            number(order["target"])
+            target_price
         )
 
         actual_net_rr = calculate_rr(
             actual_price,
-            number(order["stop"]),
-            number(order["target"]),
+            stop_price,
+            target_price,
             order["direction"]
         )
-
-        print("ACTUAL ESTIMATED PROFIT:", actual_net_profit)
-        print("ACTUAL NET RR:", actual_net_rr)
 
         allowed_risk = min(
             MAX_RISK,
@@ -784,6 +902,22 @@ def execute_order(order, signal):
                 f"Filled risk exceeds budget: "
                 f"{actual_risk:.4f} > {allowed_risk:.4f}"
             )
+
+        required_rr = STRATEGY_MIN_RR[
+            order["strategy"]
+        ]
+
+        if actual_net_rr + 1e-9 < required_rr:
+            raise RuntimeError(
+                f"Filled RR below minimum: "
+                f"{actual_net_rr:.4f} < {required_rr:.4f}"
+            )
+
+        print("ACTUAL FILL SIZE:", actual_size)
+        print("ACTUAL FILL PRICE:", actual_price)
+        print("ACTUAL ESTIMATED RISK:", actual_risk)
+        print("ACTUAL ESTIMATED PROFIT:", actual_net_profit)
+        print("ACTUAL NET RR:", actual_net_rr)
 
         message = (
             "Bitget Demo 自动开仓成功\n\n"
