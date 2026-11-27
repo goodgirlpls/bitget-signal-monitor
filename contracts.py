@@ -45,7 +45,10 @@ def decimal_places(value):
     return int(result)
 
 
-def parse_contract(data):
+ def parse_contract(data):
+
+    print("RAW CONTRACT DATA:")
+    print(json.dumps(data, indent=2))
 
     symbol = data["symbol"]
 
