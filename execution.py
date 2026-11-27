@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import hmac
 import hashlib
 import base64
@@ -25,7 +26,22 @@ SYMBOLS = [
     "SOLUSDT"
 ]
 
+def positive_number(value):
 
+    try:
+        result = float(value)
+
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeError(
+            "Invalid numeric value"
+        ) from None
+
+    if not math.isfinite(result) or result <= 0:
+        raise RuntimeError(
+            "Invalid positive numeric value"
+        )
+
+    return result
 def demo_request(method, path, params=None, body=None):
 
     if not all([API_KEY, SECRET_KEY, PASSPHRASE]):
@@ -199,19 +215,22 @@ def place_order(
     if direction not in ("LONG", "SHORT"):
         raise RuntimeError("Invalid direction")
 
-    if float(size) <= 0:
-        raise RuntimeError("Invalid order size")
-
-    if min(float(price), float(stop), float(target)) <= 0:
-        raise RuntimeError("Invalid price")
+    order_size = positive_number(size)
+    order_price = positive_number(price)
+    stop_price = positive_number(stop)
+    target_price = positive_number(target)
 
     if direction == "LONG":
-        if not float(stop) < float(price) < float(target):
-            raise RuntimeError("Invalid LONG stop or target")
+        if not stop_price < order_price < target_price:
+            raise RuntimeError(
+                "Invalid LONG stop or target"
+            )
 
     if direction == "SHORT":
-        if not float(target) < float(price) < float(stop):
-            raise RuntimeError("Invalid SHORT stop or target")
+        if not target_price < order_price < stop_price:
+            raise RuntimeError(
+                "Invalid SHORT stop or target"
+            )
 
     if not client_oid:
         raise RuntimeError("Missing client order ID")
@@ -224,7 +243,9 @@ def place_order(
     if account.get("marginMode") != "crossed":
         raise RuntimeError("Unexpected margin mode")
 
-    leverage = float(account["crossedMarginLeverage"])
+    leverage = positive_number(
+        account["crossedMarginLeverage"]
+    )
 
     if not 1 <= leverage <= MAX_LEVERAGE:
         raise RuntimeError("Leverage exceeds limit")
