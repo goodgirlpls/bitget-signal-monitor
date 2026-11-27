@@ -1671,6 +1671,139 @@ def update_trailing_stop(record, live_position):
     print("NEW STOP:", new_stop)
 
     return True
+def manage_positions(snapshot):
+
+    state, state_sha = load_state()
+
+    records = state["positions"]
+
+    live_positions = {}
+
+    for position in snapshot["positions"]:
+
+        symbol = position["symbol"]
+        side = position["holdSide"]
+
+        if side not in ("long", "short"):
+            raise RuntimeError("Invalid position side")
+
+        direction = (
+            "LONG" if side == "long"
+            else "SHORT"
+        )
+
+        key = symbol + ":" + direction
+
+        if key in live_positions:
+            raise RuntimeError("Duplicate live position")
+
+        live_positions[key] = position
+
+    print("===== POSITION MANAGEMENT =====")
+    print("SAVED POSITIONS:", len(records))
+    print("LIVE POSITIONS:", len(live_positions))
+
+    for key in live_positions:
+
+        if key not in records:
+            raise RuntimeError(
+                f"Unmanaged live position: {key}"
+            )
+
+    for key, record in list(records.items()):
+
+        symbol = record["symbol"]
+
+        if key != symbol + ":" + record["direction"]:
+            raise RuntimeError("Invalid position state key")
+
+        live_position = live_positions.get(key)
+
+        if live_position is None:
+
+            plans = get_protection_orders(symbol)
+
+            if plans:
+                raise RuntimeError(
+                    f"Residual protection orders: {key}"
+                )
+
+            raise RuntimeError(
+                f"Closed position requires reconciliation: {key}"
+            )
+
+        if record.get("status") not in (
+            "ACTIVE",
+            "BREAKEVEN",
+            "TRAILING"
+        ):
+            raise RuntimeError(
+                f"Unresolved position state: {key}"
+            )
+
+        if not EXECUTION_ENABLED:
+
+            print("POSITION MANAGEMENT READ ONLY:", key)
+
+            continue
+
+        if MODE != "auto_trade":
+            continue
+
+        if not record.get("breakeven_activated"):
+
+            changed = activate_breakeven(
+                record,
+                live_position
+            )
+
+            if changed:
+
+                state_sha = save_state(
+                    state,
+                    state_sha
+                )
+
+                print("BREAKEVEN STATE SAVED:", key)
+
+                send_telegram(
+                    "Bitget Demo 保本止损已激活\n\n"
+                    f"币种：{symbol}\n"
+                    f"方向：{record['direction']}\n"
+                    f"新止损：{record['current_stop']}\n"
+                    f"剩余数量：{record['remaining_size']}"
+                )
+
+        else:
+
+            old_stop = record["current_stop"]
+
+            changed = update_trailing_stop(
+                record,
+                live_position
+            )
+
+            if changed:
+
+                state_sha = save_state(
+                    state,
+                    state_sha
+                )
+
+                print("TRAILING STATE SAVED:", key)
+
+                send_telegram(
+                    "Bitget Demo 追踪止损状态更新\n\n"
+                    f"币种：{symbol}\n"
+                    f"方向：{record['direction']}\n"
+                    f"原止损：{old_stop}\n"
+                    f"当前止损：{record['current_stop']}\n"
+                    f"状态：{record['status']}"
+                )
+
+    print("POSITION MANAGEMENT COMPLETED")
+
+
 def scan_market():
 
     snapshot = account_snapshot()
@@ -1865,8 +1998,9 @@ def main():
 
     elif MODE == "auto_trade":
 
-        scan_market()
+        manage_positions(snapshot)
 
+        scan_market()
     elif MODE == "report":
 
         report(snapshot)
