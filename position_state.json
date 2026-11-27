@@ -2,5 +2,6 @@
     "version": 1,
     "positions": {},
     "execution_blocked": false,
-    "block_reason": null
+    "block_reason": null,
+    "last_storage_test": "2026-11-27T19:28:20.982092+00:00"
 }
