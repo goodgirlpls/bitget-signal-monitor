@@ -434,7 +434,7 @@ def open_position_risk(snapshot):
         print("STOP RISK:", round(stop_risk, 4))
         print("RESERVED RISK:", round(reserved, 4))
 
-return total_risk
+    return total_risk
 
 
 def check_candidate(signal, snapshot):
@@ -1130,34 +1130,60 @@ def execute_order(order, signal):
         print("ACTUAL ESTIMATED RISK:", actual_risk)
         print("ACTUAL ESTIMATED PROFIT:", actual_net_profit)
         print("ACTUAL NET RR:", actual_net_rr)
+        tp1_quantity = number(tp1_size_text)
+
+        tp1_price = number(tp1_price_text)
+
+        tp1_profit = tp1_quantity * profit_per_unit(
+            actual_price,
+            tp1_price
+        )
+
+        tp1_percentage = (
+            tp1_quantity / actual_size * 100
+        )
+
+        tp1_rr = calculate_rr(
+            actual_price,
+            stop_price,
+            tp1_price,
+            order["direction"]
+        )
 
         message = (
             "Bitget Demo 自动开仓成功\n\n"
             f"策略：{signal['strategy']}\n"
             f"币种：{order['symbol']}\n"
             f"方向：{order['direction']}\n"
-            f"开仓数量：{actual_size} {order['coin']}\n"
             f"实际成交价：{actual_price}\n"
+            f"开仓数量：{actual_size} {order['coin']}\n"
             f"杠杆：{order['leverage']:g}x\n"
             "保证金模式：全仓 Cross\n"
             f"名义仓位：{actual_notional:.2f} U\n"
             f"估算初始保证金："
             f"{actual_notional / order['leverage']:.2f} U\n\n"
-            f"止损：{order['stop']}\n"
-            f"止盈：{order['target']}\n"
-            f"估算止损风险：{actual_risk:.2f} U\n"
-            f"计划净利润：{order['net_profit']:.2f} U\n"
-            f"计划盈亏比：1:{order['net_rr']:.2f}\n"
-            f"成交后预计净利润：{actual_net_profit:.2f} U\n"
-            f"成交后预计盈亏比：1:{actual_net_rr:.2f}\n\n"
-            "成交状态：已确认\n"
-            "止盈止损：已查询确认\n"
+            "===== 初始风险 =====\n"
+            f"初始止损：{stop_price}\n"
+            f"预计止损风险：{actual_risk:.2f} U\n\n"
+            "===== 第一阶段止盈 =====\n"
+            f"TP1价格：{tp1_price}\n"
+            f"TP1净盈亏比：1:{tp1_rr:.2f}\n"
+            f"平仓比例：{tp1_percentage:.2f}%\n"
+            f"平仓数量：{tp1_quantity}\n"
+            f"预计部分净利润：{tp1_profit:.2f} U\n\n"
+            "===== 动态持仓管理 =====\n"
+            f"剩余数量：{actual_size - tp1_quantity:.8f}\n"
+            f"理论保本止损：{position_targets['breakeven']:.8f}\n"
+            f"3R追踪启动价格：{position_targets['trail_start']:.8f}\n"
+            "TP1确认成交后移动保本止损。\n"
+            "达到3R后启动结构追踪止损。\n"
+            "剩余仓位不设置固定止盈。\n\n"
+            "初始保护订单：已查询确认\n"
             "账户：模拟盘 Demo\n"
             f"订单编号：{order_id}"
         )
 
         send_telegram(message)
-
         print("TRADE AND PROTECTION VERIFIED")
 
         return True
