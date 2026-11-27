@@ -911,11 +911,17 @@ def execute_order(order, signal):
             abs_tol=1e-8
         ):
             raise RuntimeError("Unexpected fill size")
+        initial_protection_order = dict(order)
+        initial_protection_order["target_size"] = 0
 
-        protection = verify_protection(order)
+        protection = verify_protection(
+            initial_protection_order
+        )
 
         if not protection.get("verified"):
-            raise RuntimeError("Protection not verified")
+            raise RuntimeError(
+                "Initial stop protection not verified"
+            )
 
         if order["direction"] == "LONG":
 
@@ -980,7 +986,61 @@ def execute_order(order, signal):
                 f"Filled RR below minimum: "
                 f"{actual_net_rr:.4f} < {required_rr:.4f}"
             )
+        spec = CONTRACTS[order["symbol"]]
 
+        position_targets = calculate_position_targets(
+            actual_price,
+            stop_price,
+            order["direction"]
+        )
+
+        tp1_price_text = round_step(
+            position_targets["tp1"],
+            spec["price_step"],
+            upward=order["direction"] == "LONG"
+        )
+
+        tp1_size_text = order["target_size"]
+
+        tp1_client_oid = (
+            order["client_oid"] + "-tp1"
+        )
+
+        print("TP1 PRICE:", tp1_price_text)
+        print("TP1 SIZE:", tp1_size_text)
+        print("BREAKEVEN:", position_targets["breakeven"])
+        print("TRAIL START:", position_targets["trail_start"])
+
+        partial_tp = place_partial_take_profit(
+            order["symbol"],
+            order["direction"],
+            tp1_size_text,
+            tp1_price_text,
+            tp1_client_oid
+        )
+
+        if not isinstance(partial_tp, dict):
+            raise RuntimeError(
+                "Invalid partial TP response"
+            )
+
+        if not partial_tp.get("orderId"):
+            raise RuntimeError(
+                "Partial TP order ID missing"
+            )
+
+        updated_order = dict(order)
+        updated_order["target"] = tp1_price_text
+        updated_order["target_size"] = tp1_size_text
+
+        protection = verify_protection(updated_order)
+
+        if not protection.get("verified"):
+            raise RuntimeError(
+                "Partial TP protection not verified"
+            )
+
+        print("PARTIAL TP VERIFIED")
         print("ACTUAL FILL SIZE:", actual_size)
         print("ACTUAL FILL PRICE:", actual_price)
         print("ACTUAL ESTIMATED RISK:", actual_risk)
