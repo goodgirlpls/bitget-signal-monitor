@@ -605,7 +605,7 @@ def execute_order(order, signal):
         - int(signal["candle_time"])
     )
 
-       max_age = STRATEGY_MAX_AGE[
+    max_age = STRATEGY_MAX_AGE[
         signal["strategy"]
     ]
 
