@@ -518,7 +518,412 @@ class TraderTests(unittest.TestCase):
 
                 mock_order.assert_not_called()
 
+    def test_breakeven_long_short(self):
 
+        entry = 60000.0
+
+        for direction in ("LONG", "SHORT"):
+
+            with self.subTest(direction=direction):
+
+                price = trader.calculate_breakeven(
+                    entry, direction
+                )
+
+                entry_cost = entry * (
+                    risk.ENTRY_FEE + risk.SLIPPAGE
+                )
+
+                exit_cost = price * (
+                    risk.EXIT_FEE + risk.SLIPPAGE
+                )
+
+                gross_profit = (
+                    price - entry
+                    if direction == "LONG"
+                    else entry - price
+                )
+
+                self.assertAlmostEqual(
+                    gross_profit - entry_cost - exit_cost,
+                    0.0,
+                    places=8
+                )
+
+
+    def test_dynamic_position_targets(self):
+
+        for direction in ("LONG", "SHORT"):
+
+            with self.subTest(direction=direction):
+
+                entry = 60000.0
+
+                stop = (
+                    59800.0 if direction == "LONG"
+                    else 60200.0
+                )
+
+                targets = trader.calculate_position_targets(
+                    entry, stop, direction
+                )
+
+                self.assertAlmostEqual(
+                    risk.calculate_rr(
+                        entry, stop,
+                        targets["tp1"],
+                        direction
+                    ),
+                    2.0,
+                    places=8
+                )
+
+                self.assertAlmostEqual(
+                    risk.calculate_rr(
+                        entry, stop,
+                        targets["trail_start"],
+                        direction
+                    ),
+                    3.0,
+                    places=8
+                )
+
+
+    def test_partial_tp_quantity(self):
+
+        for symbol in trader.SYMBOLS:
+
+            for direction in ("LONG", "SHORT"):
+
+                with self.subTest(
+                    symbol=symbol,
+                    direction=direction
+                ):
+
+                    order = self.build_test_order(
+                        symbol=symbol,
+                        direction=direction
+                    )
+
+                    size = Decimal(order["size"])
+                    tp1 = Decimal(order["target_size"])
+
+                    step = Decimal(
+                        self.contracts[symbol]["size_step"]
+                    )
+
+                    minimum = Decimal(
+                        self.contracts[symbol]["min_size"]
+                    )
+
+                    self.assertGreaterEqual(tp1, minimum)
+                    self.assertGreaterEqual(size - tp1, minimum)
+
+                    self.assertEqual(
+                        tp1 % step,
+                        Decimal("0")
+                    )
+
+                    self.assertLessEqual(
+                        tp1,
+                        size * Decimal("0.5")
+                    )
+
+                    self.assertLess(
+                        size * Decimal("0.5") - tp1,
+                        step
+                    )
+
+
+    def test_breakeven_requires_tp1_fill(self):
+
+        record = {
+            "breakeven_activated": False
+        }
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", True), \
+             patch(
+                 "trader.confirm_tp1_fill",
+                 return_value=False
+             ), \
+             patch("trader.modify_stop_loss") as modify:
+
+            result = trader.activate_breakeven(
+                record, {}
+            )
+
+            self.assertFalse(result)
+            modify.assert_not_called()
+
+
+    def test_trailing_requires_breakeven(self):
+
+        record = {
+            "tp1_completed": True,
+            "breakeven_activated": False
+        }
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", True), \
+             patch("trader.modify_stop_loss") as modify:
+
+            result = trader.update_trailing_stop(
+                record, {}
+            )
+
+            self.assertFalse(result)
+            modify.assert_not_called()
+
+
+    def test_trailing_activation_threshold(self):
+
+        for direction in ("LONG", "SHORT"):
+
+            with self.subTest(direction=direction):
+
+                record = {
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "remaining_size": 0.005,
+                    "tp1_completed": True,
+                    "breakeven_activated": True,
+                    "trailing_activated": False,
+                    "trail_start_price": 61000.0,
+                    "status": "BREAKEVEN"
+                }
+
+                position = {
+                    "symbol": "BTCUSDT",
+                    "holdSide": (
+                        "long" if direction == "LONG"
+                        else "short"
+                    ),
+                    "total": "0.005",
+                    "markPrice": (
+                        "60999" if direction == "LONG"
+                        else "61001"
+                    )
+                }
+
+                with patch("trader.MODE", "auto_trade"), \
+                     patch("trader.EXECUTION_ENABLED", True), \
+                     patch("trader.modify_stop_loss") as modify:
+
+                    self.assertFalse(
+                        trader.update_trailing_stop(
+                            record, position
+                        )
+                    )
+
+                    self.assertFalse(
+                        record["trailing_activated"]
+                    )
+
+                    position["markPrice"] = "61000"
+
+                    self.assertTrue(
+                        trader.update_trailing_stop(
+                            record, position
+                        )
+                    )
+
+                    self.assertTrue(
+                        record["trailing_activated"]
+                    )
+
+                    self.assertEqual(
+                        record["status"],
+                        "TRAILING"
+                    )
+
+                    modify.assert_not_called()
+
+
+    def test_trailing_stop_long(self):
+
+        improved = trader.calculate_trailing_stop(
+            "LONG", 60000, 60500, 100, 61000
+        )
+
+        self.assertGreater(improved, 60000)
+        self.assertLess(improved, 61000)
+
+        unchanged = trader.calculate_trailing_stop(
+            "LONG", 60000, 59500, 100, 61000
+        )
+
+        self.assertEqual(unchanged, 60000)
+
+
+    def test_trailing_stop_short(self):
+
+        improved = trader.calculate_trailing_stop(
+            "SHORT", 60000, 59500, 100, 59000
+        )
+
+        self.assertLess(improved, 60000)
+        self.assertGreater(improved, 59000)
+
+        unchanged = trader.calculate_trailing_stop(
+            "SHORT", 60000, 60500, 100, 59000
+        )
+
+        self.assertEqual(unchanged, 60000)
+
+
+    def test_dynamic_management_disabled(self):
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", False), \
+             patch("trader.modify_stop_loss") as modify:
+
+            with self.assertRaises(RuntimeError):
+
+                trader.activate_breakeven({}, {})
+
+            with self.assertRaises(RuntimeError):
+
+                trader.update_trailing_stop({}, {})
+
+            modify.assert_not_called()
+
+
+    def test_empty_position_risk(self):
+
+        state = {
+            "positions": {}
+        }
+
+        with patch(
+            "trader.load_state",
+            return_value=(state, "test-sha")
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[]
+        ):
+
+            result = trader.open_position_risk(
+                self.snapshot
+            )
+
+            self.assertEqual(result, 0.0)
+
+
+    def test_unmanaged_position_rejected(self):
+
+        self.snapshot["positions"] = [{
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "total": "0.01"
+        }]
+
+        with patch(
+            "trader.load_state",
+            return_value=({"positions": {}}, "test-sha")
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[]
+        ):
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Unmanaged position"
+            ):
+
+                trader.open_position_risk(
+                    self.snapshot
+                )
+
+
+    def test_residual_protection_rejected(self):
+
+        with patch(
+            "trader.load_state",
+            return_value=({"positions": {}}, "test-sha")
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[{"orderId": "RESIDUAL"}]
+        ):
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Residual protection orders"
+            ):
+
+                trader.open_position_risk(
+                    self.snapshot
+                )
+
+
+    def test_multiple_position_risk(self):
+
+        records = {}
+        positions = []
+        expected_risk = 0.0
+
+        for symbol, entry, stop, size in (
+            ("BTCUSDT", 60000, 59800, 0.01),
+            ("ETHUSDT", 1700, 1690, 0.1)
+        ):
+
+            records[symbol + ":LONG"] = {
+                "status": "ACTIVE",
+                "current_stop": stop,
+                "remaining_size": size,
+                "tp1_size": size * 0.5,
+                "tp1_price": entry * 1.02,
+                "stop_order_ids": ["STOP-" + symbol],
+                "target_order_ids": ["TP-" + symbol]
+            }
+
+            positions.append({
+                "symbol": symbol,
+                "holdSide": "long",
+                "total": str(size),
+                "openPriceAvg": str(entry),
+                "unrealizedPL": "0"
+            })
+
+            expected_risk += size * risk.risk_per_unit(
+                entry, stop
+            )
+
+        self.snapshot["positions"] = positions
+
+        def mock_verify(order):
+
+            symbol = order["symbol"]
+
+            return {
+                "verified": True,
+                "stop_ids": ["STOP-" + symbol],
+                "target_ids": ["TP-" + symbol]
+            }
+
+        with patch(
+            "trader.load_state",
+            return_value=(
+                {"positions": records},
+                "test-sha"
+            )
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[]
+        ), patch(
+            "trader.verify_protection",
+            side_effect=mock_verify
+        ):
+
+            result = trader.open_position_risk(
+                self.snapshot
+            )
+
+            self.assertAlmostEqual(
+                result,
+                expected_risk,
+                places=8
+            )
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
