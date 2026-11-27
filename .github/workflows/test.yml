@@ -57,3 +57,7 @@ jobs:
           print("EXECUTION ENABLED:", trader.EXECUTION_ENABLED)
           print("ALL MODULE INTEGRATION TESTS PASSED")
           PY
+
+      - name: Order Construction and Safety Test
+        run: |
+          python -m unittest -v test_trader
