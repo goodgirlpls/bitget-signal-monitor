@@ -1709,6 +1709,120 @@ def update_trailing_stop(record, live_position):
     print("NEW STOP:", new_stop)
 
     return True
+def confirm_position_closed(record):
+
+    symbol = record["symbol"]
+    direction = record["direction"]
+
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid closed position symbol")
+
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid closed position direction")
+
+    side = "long" if direction == "LONG" else "short"
+
+    opened_at = datetime.fromisoformat(
+        record["opened_at"]
+    )
+
+    opened_ms = int(
+        opened_at.timestamp() * 1000
+    )
+
+    now_ms = int(time.time() * 1000)
+
+    result = get_history_positions(
+        opened_ms - 60000,
+        now_ms
+    )
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Invalid closed position history")
+
+    history = result.get("list")
+
+    if not isinstance(history, list):
+        raise RuntimeError("Missing closed position history")
+
+    if len(history) >= 100:
+        raise RuntimeError("History pagination required")
+
+    matches = []
+
+    for item in history:
+
+        if item.get("symbol") != symbol:
+            continue
+
+        if item.get("holdSide") != side:
+            continue
+
+        created = number(item.get("ctime") or 0)
+        updated = number(item.get("utime") or 0)
+
+        if abs(created - opened_ms) > 60000:
+            continue
+
+        if updated < opened_ms:
+            continue
+
+        open_size = number(item.get("openTotalPos") or 0)
+        close_size = number(item.get("closeTotalPos") or 0)
+
+        initial_size = number(record["initial_size"])
+
+        if not math.isclose(
+            open_size,
+            initial_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
+            continue
+
+        if not math.isclose(
+            close_size,
+            initial_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
+            continue
+
+        matches.append(item)
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Closed position history not uniquely confirmed"
+        )
+
+    closed = matches[0]
+
+    net_profit = number(closed["netProfit"])
+
+    fresh_snapshot = account_snapshot()
+
+    if any(
+        p["symbol"] == symbol
+        for p in fresh_snapshot["positions"]
+    ):
+        raise RuntimeError(
+            "Position still exists"
+        )
+
+    if fresh_snapshot["pending"]:
+        raise RuntimeError(
+            "Pending orders require review"
+        )
+
+    if get_protection_orders(symbol):
+        raise RuntimeError(
+            "Residual protection orders"
+        )
+
+    print("POSITION CLOSURE CONFIRMED:", symbol)
+    print("CLOSED NET PROFIT:", net_profit)
+
+    return net_profit
 def manage_positions(snapshot):
 
     state, state_sha = load_state()
@@ -1759,17 +1873,53 @@ def manage_positions(snapshot):
 
         if live_position is None:
 
-            plans = get_protection_orders(symbol)
-
-            if plans:
+            if record.get("status") not in (
+                "ACTIVE",
+                "BREAKEVEN",
+                "TRAILING"
+            ):
                 raise RuntimeError(
-                    f"Residual protection orders: {key}"
+                    f"Unresolved closed position: {key}"
                 )
 
-            raise RuntimeError(
-                f"Closed position requires reconciliation: {key}"
+            net_profit = confirm_position_closed(
+                record
             )
 
+            if not EXECUTION_ENABLED:
+
+                print(
+                    "CLOSED POSITION VERIFIED - READ ONLY:",
+                    key
+                )
+
+                continue
+
+            del records[key]
+
+            state_sha = save_state(
+                state,
+                state_sha
+            )
+
+            print("CLOSED POSITION STATE REMOVED:", key)
+
+            send_telegram(
+                "Bitget Demo 持仓已全部平仓\n\n"
+                f"策略：{record['strategy']}\n"
+                f"币种：{symbol}\n"
+                f"方向：{record['direction']}\n"
+                f"开仓价格：{record['entry_price']}\n"
+                f"初始数量：{record['initial_size']}\n"
+                f"实际净收益：{net_profit:+.4f} U\n"
+                f"初始预计风险：{record['initial_risk']:.4f} U\n"
+                "剩余持仓：0\n"
+                "残留保护订单：0\n"
+                "持仓状态：已清理\n"
+                "账户：模拟盘 Demo"
+            )
+
+            continue
         if record.get("status") not in (
             "ACTIVE",
             "BREAKEVEN",
