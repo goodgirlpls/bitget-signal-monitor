@@ -18,7 +18,7 @@ on:
           - report
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: bitget-demo-trader
@@ -38,8 +38,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run Demo Trader
+      - name: Run Demo Trader44
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           BITGET_DEMO_API_KEY: ${{ secrets.BITGET_DEMO_API_KEY }}
           BITGET_DEMO_SECRET_KEY: ${{ secrets.BITGET_DEMO_SECRET_KEY }}
           BITGET_DEMO_PASSPHRASE: ${{ secrets.BITGET_DEMO_PASSPHRASE }}
