@@ -38,9 +38,20 @@ from execution import (
     demo_get,
     get_symbol_account,
     get_history_positions,
-    place_order
+    place_order,
+    get_live_positions,
+    place_partial_take_profit,
+    modify_stop_loss
 )
 
+from position_manager import (
+    TP1_R,
+    TP1_RATIO,
+    TRAIL_START_R,
+    calculate_breakeven,
+    calculate_position_targets,
+    calculate_trailing_stop
+)
 from protection import (
     verify_protection,
     get_protection_orders
@@ -625,7 +636,30 @@ def build_order(signal, snapshot, risk_budget):
 
     if size < number(spec["min_size"]):
         raise RuntimeError("Quantity below minimum")
+    tp1_size_text = round_step(
+        size * TP1_RATIO,
+        spec["size_step"]
+    )
 
+    tp1_size = number(tp1_size_text)
+    remaining_size = size - tp1_size
+
+    minimum_size = number(spec["min_size"])
+
+    if tp1_size < minimum_size:
+        raise RuntimeError(
+            "Partial TP quantity below minimum"
+        )
+
+    if remaining_size < minimum_size - 1e-8:
+        raise RuntimeError(
+            "Remaining quantity below minimum"
+        )
+
+    if not 0 < tp1_size < size:
+        raise RuntimeError(
+            "Invalid partial TP quantity"
+        )
     notional = size * price
 
     min_notional = max(
@@ -650,6 +684,7 @@ def build_order(signal, snapshot, risk_budget):
         "coin": symbol.replace("USDT", ""),
         "direction": direction,
         "size": size_text,
+        "target_size": tp1_size_text,
         "price": price_text,
         "stop": stop_text,
         "target": target_text,
