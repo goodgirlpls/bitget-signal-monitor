@@ -67,7 +67,7 @@ from market_space import (
 from state_store import load_state, save_state
 
 MODE = os.environ.get("TRADER_MODE", "check")
-EXECUTION_ENABLED = False
+EXECUTION_ENABLED = True
 
 STRATEGY_MAX_AGE = {
     "A": 900000,
