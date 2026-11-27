@@ -58,6 +58,8 @@ from protection import (
 )
 from contracts import fetch_contracts
 
+from state_store import load_state, save_state
+
 MODE = os.environ.get("TRADER_MODE", "check")
 EXECUTION_ENABLED = False
 
@@ -1006,6 +1008,47 @@ def execute_order(order, signal):
             order["client_oid"] + "-tp1"
         )
 
+        state, state_sha = load_state()
+
+        position_key = (
+            order["symbol"] + ":" + order["direction"]
+        )
+
+        if position_key in state["positions"]:
+            raise RuntimeError(
+                "Existing position state requires review"
+            )
+
+        state["positions"][position_key] = {
+            "symbol": order["symbol"],
+            "direction": order["direction"],
+            "strategy": order["strategy"],
+            "signal_id": order["signal_id"],
+            "entry_order_id": str(order_id),
+            "entry_client_oid": order["client_oid"],
+            "entry_price": actual_price,
+            "initial_size": actual_size,
+            "remaining_size": actual_size,
+            "initial_stop": stop_price,
+            "current_stop": stop_price,
+            "initial_risk": actual_risk,
+            "tp1_price": number(tp1_price_text),
+            "tp1_size": number(tp1_size_text),
+            "tp1_client_oid": tp1_client_oid,
+            "tp1_order_id": None,
+            "tp1_completed": False,
+            "breakeven_price": position_targets["breakeven"],
+            "breakeven_activated": False,
+            "trail_start_price": position_targets["trail_start"],
+            "trailing_activated": False,
+            "status": "TP1_PENDING",
+            "opened_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        state_sha = save_state(state, state_sha)
+
+        print("INITIAL POSITION STATE SAVED")
+
         print("TP1 PRICE:", tp1_price_text)
         print("TP1 SIZE:", tp1_size_text)
         print("BREAKEVEN:", position_targets["breakeven"])
@@ -1095,7 +1138,6 @@ def execute_order(order, signal):
 def scan_market():
 
     snapshot = account_snapshot()
-
     if snapshot["pending"]:
         print("PENDING ORDERS - BLOCKED")
         return
