@@ -570,6 +570,11 @@ def build_order(signal, snapshot, risk_budget):
         )
 
         target = number(target_text)
+        if "market_target" not in signal:
+            raise RuntimeError(
+                "Missing market profit space validation"
+            )
+
         if "market_target" in signal:
 
             market_target = number(
