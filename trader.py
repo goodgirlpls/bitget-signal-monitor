@@ -45,6 +45,7 @@ from protection import (
     verify_protection,
     get_protection_orders
 )
+from contracts import fetch_contracts
 
 MODE = os.environ.get("TRADER_MODE", "check")
 EXECUTION_ENABLED = False
@@ -66,24 +67,7 @@ STRATEGY_MIN_RR = {
 PRODUCT_TYPE = "USDT-FUTURES"
 MARGIN_COIN = "USDT"
 
-CONTRACTS = {
-    "BTCUSDT": {
-        "size_step": "0.0001",
-        "price_step": "0.1",
-        "min_size": "0.0001"
-    },
-    "ETHUSDT": {
-        "size_step": "0.01",
-        "price_step": "0.01",
-        "min_size": "0.01"
-    },
-    "SOLUSDT": {
-        "size_step": "0.1",
-        "price_step": "0.001",
-        "min_size": "0.1"
-    }
-}
-
+CONTRACTS = {}
 
 def number(value):
 
@@ -450,9 +434,21 @@ def build_order(signal, snapshot, risk_budget):
         account["crossedMarginLeverage"]
     )
 
-    if not 1 <= leverage <= MAX_LEVERAGE:
-        raise RuntimeError("Invalid leverage")
+    exchange_min_leverage = number(
+        spec["min_leverage"]
+    )
 
+    exchange_max_leverage = number(
+        spec["max_leverage"]
+    )
+
+    allowed_max_leverage = min(
+        MAX_LEVERAGE,
+        exchange_max_leverage
+    )
+
+    if not exchange_min_leverage <= leverage <= allowed_max_leverage:
+        raise RuntimeError("Invalid leverage")
     is_long = direction == "LONG"
 
     required_rr = STRATEGY_MIN_RR[strategy]
@@ -529,6 +525,19 @@ def build_order(signal, snapshot, risk_budget):
         number(signal["quantity"])
     )
 
+    max_order_size = spec.get("max_order_size")
+
+    if max_order_size is not None:
+        quantity = min(
+            quantity,
+            number(max_order_size)
+        )
+    else:
+        print(
+            "WARNING: Exchange maximum order size unavailable",
+            symbol
+        )
+
     size_text = round_step(
         quantity,
         spec["size_step"]
@@ -541,7 +550,12 @@ def build_order(signal, snapshot, risk_budget):
 
     notional = size * price
 
-    if notional < 5:
+    min_notional = max(
+        5.0,
+        number(spec["min_notional"])
+    )
+
+    if notional < min_notional:
         raise RuntimeError("Notional below minimum")
 
     estimated_loss = size * unit_risk
@@ -967,8 +981,19 @@ def report(snapshot):
 
 def main():
 
+
+    global CONTRACTS
+
     if MODE not in ("check", "auto_trade", "report"):
         raise RuntimeError("Invalid trader mode")
+
+    CONTRACTS = fetch_contracts()
+
+    print("DYNAMIC CONTRACTS LOADED")
+
+    for symbol, spec in CONTRACTS.items():
+        print("CONTRACT:", symbol)
+        print(json.dumps(spec, indent=2))
 
     print("MODE: DEMO ONLY")
     print("STRATEGY VERSION:", VERSION)
