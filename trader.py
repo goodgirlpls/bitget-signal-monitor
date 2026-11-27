@@ -1437,9 +1437,11 @@ def activate_breakeven(record, live_position):
 
     # Only modify a verified position-wide stop.
     # Fixed-size stop behavior requires Demo validation.
-    if stop.get("planType") != "pos_loss":
+    stop_plan_type = stop.get("planType")
+
+    if stop_plan_type not in ("loss_plan", "pos_loss"):
         raise RuntimeError(
-            "Position-wide stop required"
+            "Unsupported stop plan type"
         )
 
     result = modify_stop_loss(
@@ -1449,7 +1451,7 @@ def activate_breakeven(record, live_position):
         old_stop,
         new_stop_text,
         remaining_size,
-        "pos_loss"
+        stop_plan_type
     )
 
     if not isinstance(result, dict):
@@ -1651,11 +1653,12 @@ def update_trailing_stop(record, live_position):
     if stop_id not in record.get("stop_order_ids", []):
         raise RuntimeError("Stop ID mismatch")
 
-    if stop.get("planType") != "pos_loss":
-        raise RuntimeError(
-            "Position-wide stop required"
-        )
+    stop_plan_type = stop.get("planType")
 
+    if stop_plan_type not in ("loss_plan", "pos_loss"):
+        raise RuntimeError(
+            "Unsupported stop plan type"
+        )
     if stop.get("triggerType") != "fill_price":
         raise RuntimeError("Unexpected trigger type")
 
@@ -1674,7 +1677,7 @@ def update_trailing_stop(record, live_position):
         old_stop,
         new_stop_text,
         remaining_size,
-        "pos_loss"
+        stop_plan_type
     )
 
     if not isinstance(result, dict):
