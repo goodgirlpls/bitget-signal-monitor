@@ -929,6 +929,35 @@ class TraderTests(unittest.TestCase):
                 expected_risk,
                 places=8
             )
+    def test_missing_market_target(self):
+        signal = self.make_signal("BTCUSDT", "LONG", "A")
+        signal.pop("market_target", None)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Missing market profit space validation"
+        ):
+            trader.build_order(signal, self.snapshot, 5.0)
+
+    def test_insufficient_long_market_space(self):
+        signal = self.make_signal("BTCUSDT", "LONG", "A")
+        signal["market_target"] = signal["entry"] + 1
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Target exceeds market profit space"
+        ):
+            trader.build_order(signal, self.snapshot, 5.0)
+
+    def test_insufficient_short_market_space(self):
+        signal = self.make_signal("BTCUSDT", "SHORT", "A")
+        signal["market_target"] = signal["entry"] - 1
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Target exceeds market profit space"
+        ):
+            trader.build_order(signal, self.snapshot, 5.0)
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
