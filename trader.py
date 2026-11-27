@@ -39,7 +39,7 @@ from protection import (
 )
 
 MODE = os.environ.get("TRADER_MODE", "check")
-EXECUTION_ENABLED = True
+EXECUTION_ENABLED = False
 
 STRATEGY_MAX_AGE = {
     "A": 900000,
@@ -302,7 +302,15 @@ def open_position_risk(snapshot):
 
         for plan in plans:
 
-            if plan.get("holdSide") != side:
+            plan_side = plan.get("holdSide")
+            pos_side = plan.get("posSide")
+
+            if plan_side and pos_side and plan_side != pos_side:
+                raise RuntimeError("Conflicting protection sides")
+
+            plan_side = plan_side or pos_side
+
+            if plan_side != side:
                 continue
 
             if plan.get("planStatus") != "live":
@@ -315,7 +323,9 @@ def open_position_risk(snapshot):
             )
 
             covered_size = number(
-                plan.get("size") or 0
+                plan.get("size")
+                or plan.get("baseVolume")
+                or 0
             )
 
             if plan_type in ("pos_loss", "pos_profit"):
@@ -546,6 +556,9 @@ def build_order(signal, snapshot, risk_budget):
         "notional": notional,
         "margin": notional / leverage,
         "estimated_loss": estimated_loss,
+        "risk_budget": risk_budget,
+        "strategy": signal["strategy"],
+        "signal_id": signal["signal_id"],
         "net_profit": size * unit_profit,
         "net_rr": net_rr,
         "leverage": leverage
@@ -616,6 +629,9 @@ def execute_order(order, signal):
         return False
 
     print("ORDER SUBMISSION")
+    print("ORDER STRATEGY:", signal["strategy"])
+    print("SIGNAL ID:", signal["signal_id"])
+    print("CLIENT OID:", order["client_oid"])
     print(json.dumps(order, indent=2))
 
     try:
@@ -720,8 +736,16 @@ def execute_order(order, signal):
         if not valid_prices:
             raise RuntimeError("Unexpected fill price")
 
-        if actual_risk > MAX_RISK + 1e-8:
-            raise RuntimeError("Filled risk exceeds limit")
+        allowed_risk = min(
+            MAX_RISK,
+            number(order["risk_budget"])
+        )
+
+        if actual_risk > allowed_risk + 1e-8:
+            raise RuntimeError(
+                f"Filled risk exceeds budget: "
+                f"{actual_risk:.4f} > {allowed_risk:.4f}"
+            )
 
         message = (
             "Bitget Demo 自动开仓成功\n\n"
@@ -865,7 +889,12 @@ def scan_market():
 
         except RuntimeError as error:
 
-            print("ORDER SKIPPED:", str(error))
+            print(
+                "ORDER SKIPPED:",
+                signal["symbol"],
+                "STRATEGY:", signal["strategy"],
+                "REASON:", str(error)
+            )
 
             send_telegram(
                 "Bitget Demo 未开仓\n\n"
