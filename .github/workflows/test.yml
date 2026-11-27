@@ -66,3 +66,7 @@ jobs:
         run: |
           python -m py_compile contracts.py
           python -u contracts.py
+      - name: Protection Safety Test
+        run: |
+          python -m py_compile protection.py test_protection.py
+          python -m unittest -v test_protection
