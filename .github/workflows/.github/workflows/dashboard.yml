@@ -1,0 +1,87 @@
+name: Telegram Trading Dashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Dashboard query type"
+        required: true
+        default: "overview"
+        type: choice
+        options:
+          - overview
+          - positions
+          - risk
+          - history
+          - system
+          - daily
+
+  schedule:
+    - cron: '55 21,22 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bitget-telegram-dashboard
+  cancel-in-progress: false
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dashboard syntax test
+        run: python -m py_compile dashboard.py
+
+      - name: Run dashboard
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BITGET_DEMO_API_KEY: ${{ secrets.BITGET_DEMO_API_KEY }}
+          BITGET_DEMO_SECRET_KEY: ${{ secrets.BITGET_DEMO_SECRET_KEY }}
+          BITGET_DEMO_PASSPHRASE: ${{ secrets.BITGET_DEMO_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DASHBOARD_MODE: ${{ inputs.mode || 'daily' }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          python -u - <<'PY'
+          import os
+          import sys
+          import subprocess
+          from datetime import datetime, timezone
+          from zoneinfo import ZoneInfo
+
+          if os.environ.get("EVENT_NAME") == "schedule":
+              germany = datetime.now(
+                  ZoneInfo("Europe/Berlin")
+              )
+
+              offset = germany.utcoffset().total_seconds() / 3600
+
+              expected = (
+                  "55 21,22 * * *"
+              )
+
+              utc_now = datetime.now(timezone.utc)
+              expected_hour = 23 - int(offset)
+
+              if utc_now.hour != expected_hour:
+                  print("Skipping non-matching timezone schedule")
+                  sys.exit(0)
+
+          subprocess.run(
+              [sys.executable, "-u", "dashboard.py"],
+              check=True
+          )
+          PY
