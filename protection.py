@@ -85,20 +85,38 @@ def get_active_positions(symbol):
 
 
 def verify_protection(order):
-    symbol = order["symbol"]
 
-    if order["direction"] not in ("LONG", "SHORT"):
+    symbol = order["symbol"]
+    direction = order["direction"]
+
+    if direction not in ("LONG", "SHORT"):
         raise RuntimeError("Invalid order direction")
 
     expected_side = (
-        "long"
-        if order["direction"] == "LONG"
-        else "short"
+        "long" if direction == "LONG" else "short"
     )
 
     expected_stop = number(order["stop"])
-    expected_target = number(order["target"])
     expected_size = number(order["size"])
+
+    expected_target_size = number(
+        order.get("target_size", expected_size)
+    )
+
+    if expected_stop <= 0 or expected_size <= 0:
+        raise RuntimeError("Invalid protection values")
+
+    if not 0 <= expected_target_size <= expected_size:
+        raise RuntimeError("Invalid target size")
+
+    expected_target = None
+
+    if expected_target_size > 0:
+
+        expected_target = number(order["target"])
+
+        if expected_target <= 0:
+            raise RuntimeError("Invalid target price")
 
     print("===== PROTECTION VERIFICATION =====")
     print("SYMBOL:", symbol)
@@ -106,6 +124,7 @@ def verify_protection(order):
     print("EXPECTED STOP:", expected_stop)
     print("EXPECTED TARGET:", expected_target)
     print("EXPECTED SIZE:", expected_size)
+    print("EXPECTED TP SIZE:", expected_target_size)
 
     for attempt in range(5):
 
@@ -114,9 +133,8 @@ def verify_protection(order):
         positions = get_active_positions(symbol)
 
         matching_positions = [
-            position
-            for position in positions
-            if position.get("holdSide") == expected_side
+            p for p in positions
+            if p.get("holdSide") == expected_side
         ]
 
         if len(matching_positions) != 1:
@@ -127,44 +145,64 @@ def verify_protection(order):
             matching_positions[0]["total"]
         )
 
-        if abs(position_size - expected_size) > 1e-8:
+        if not math.isclose(
+            position_size,
+            expected_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
             print("POSITION SIZE MISMATCH")
             continue
 
         plans = get_protection_orders(symbol)
 
+        if len(plans) >= 100:
+            raise RuntimeError("Plan pagination required")
+
         stop_size = 0.0
         target_size = 0.0
+
+        stop_ids = []
+        target_ids = []
+
         seen_ids = set()
+        unexpected_plan = False
 
         for plan in plans:
-
-            print("CHECKING PLAN:")
-            print(json.dumps(plan, indent=2))
 
             if plan.get("symbol") != symbol:
                 continue
 
             if plan.get("holdSide") != expected_side:
-                print("REJECTED: SIDE MISMATCH")
                 continue
 
             if plan.get("planStatus") != "live":
-                print("REJECTED: STATUS MISMATCH")
                 continue
 
             if plan.get("tradeSide") != "close":
-                print("REJECTED: NOT A CLOSE ORDER")
+                continue
+
+            plan_type = plan.get("planType")
+
+            if plan_type not in (
+                "loss_plan",
+                "pos_loss",
+                "profit_plan",
+                "pos_profit"
+            ):
+                unexpected_plan = True
                 continue
 
             order_id = plan.get("orderId")
 
-            if not order_id or order_id in seen_ids:
+            if not order_id:
+                unexpected_plan = True
+                continue
+
+            if order_id in seen_ids:
                 continue
 
             seen_ids.add(order_id)
-
-            plan_type = plan.get("planType")
 
             trigger = number(
                 plan.get("triggerPrice") or 0
@@ -190,38 +228,47 @@ def verify_protection(order):
 
             size = number(raw_size or 0)
 
-            if plan_type in (
-                "pos_loss",
-                "pos_profit"
-            ):
+            if plan_type in ("pos_loss", "pos_profit"):
                 size = position_size
 
-            if size <= 0:
+            if size <= 0 or trigger <= 0:
+                unexpected_plan = True
                 continue
 
-            if plan_type in (
-                "loss_plan",
-                "pos_loss"
-            ):
-                if math.isclose(
+            if plan_type in ("loss_plan", "pos_loss"):
+
+                if not math.isclose(
                     trigger,
                     expected_stop,
                     rel_tol=0,
                     abs_tol=1e-8
                 ):
-                    stop_size += size
+                    unexpected_plan = True
+                    continue
+
+                stop_size += size
+                stop_ids.append(order_id)
 
             elif plan_type in (
                 "profit_plan",
                 "pos_profit"
             ):
-                if math.isclose(
+
+                if expected_target is None:
+                    unexpected_plan = True
+                    continue
+
+                if not math.isclose(
                     trigger,
                     expected_target,
                     rel_tol=0,
                     abs_tol=1e-8
                 ):
-                    target_size += size
+                    unexpected_plan = True
+                    continue
+
+                target_size += size
+                target_ids.append(order_id)
 
         stop_ok = math.isclose(
             stop_size,
@@ -232,16 +279,18 @@ def verify_protection(order):
 
         target_ok = math.isclose(
             target_size,
-            position_size,
+            expected_target_size,
             rel_tol=0,
             abs_tol=1e-8
         )
+
         print("Protection check:", attempt + 1)
         print("Position size:", position_size)
         print("Stop covered size:", stop_size)
         print("Target covered size:", target_size)
+        print("Unexpected plan:", unexpected_plan)
 
-        if stop_ok and target_ok:
+        if stop_ok and target_ok and not unexpected_plan:
 
             print("PROTECTION VERIFIED")
 
@@ -249,7 +298,11 @@ def verify_protection(order):
                 "verified": True,
                 "stop_verified": True,
                 "target_verified": True,
-                "position_size": position_size
+                "position_size": position_size,
+                "stop_ids": stop_ids,
+                "target_ids": target_ids,
+                "stop_size": stop_size,
+                "target_size": target_size
             }
 
     return {
