@@ -264,7 +264,6 @@ def place_order(
         "orderType": "limit",
         "force": "fok",
         "clientOid": client_oid,
-        "presetStopSurplusPrice": str(target),
         "presetStopLossPrice": str(stop)
     }
 
