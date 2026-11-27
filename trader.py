@@ -539,6 +539,39 @@ def build_order(signal, snapshot, risk_budget):
         )
 
         target = number(target_text)
+        if "market_target" in signal:
+
+            market_target = number(
+                signal["market_target"]
+            )
+
+            if (
+                is_long
+                and target > market_target
+            ):
+                raise RuntimeError(
+                    "Target exceeds market profit space"
+                )
+
+            if (
+                not is_long
+                and target < market_target
+            ):
+                raise RuntimeError(
+                    "Target exceeds market profit space"
+                )
+
+            market_rr = calculate_rr(
+                price,
+                stop,
+                market_target,
+                direction
+            )
+
+            if market_rr + 1e-9 < required_rr:
+                raise RuntimeError(
+                    "Insufficient market RR after rounding"
+                )
 
         unit_risk = risk_per_unit(
             price, stop
