@@ -273,7 +273,152 @@ def place_order(
         body
     )
 
+# =========================
+# V4.1 DYNAMIC PROTECTION
+# =========================
 
+def get_live_positions(symbol):
+
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid symbol")
+
+    result = demo_get(
+        "/api/v2/mix/position/all-position",
+        {
+            "productType": PRODUCT_TYPE,
+            "marginCoin": MARGIN_COIN
+        }
+    )
+
+    if not isinstance(result, list):
+        raise RuntimeError("Invalid positions response")
+
+    return [
+        p for p in result
+        if p.get("symbol") == symbol
+        and float(p["total"]) > 0
+    ]
+
+
+def place_partial_take_profit(
+    symbol,
+    direction,
+    size,
+    target,
+    client_oid
+):
+
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid symbol")
+
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid direction")
+
+    positive_number(size)
+    positive_number(target)
+
+    if not client_oid:
+        raise RuntimeError("Missing client order ID")
+
+    hold_side = (
+        "long" if direction == "LONG"
+        else "short"
+    )
+
+    positions = [
+        p for p in get_live_positions(symbol)
+        if p.get("holdSide") == hold_side
+    ]
+
+    if len(positions) != 1:
+        raise RuntimeError("Position not confirmed")
+
+    position_size = positive_number(
+        positions[0]["total"]
+    )
+
+    if float(size) >= position_size:
+        raise RuntimeError(
+            "Partial TP must be smaller than position"
+        )
+
+    body = {
+        "symbol": symbol,
+        "productType": PRODUCT_TYPE,
+        "marginCoin": MARGIN_COIN,
+        "planType": "profit_plan",
+        "triggerPrice": str(target),
+        "triggerType": "fill_price",
+        "executePrice": "0",
+        "holdSide": hold_side,
+        "size": str(size),
+        "clientOid": client_oid
+    }
+
+    return demo_post(
+        "/api/v2/mix/order/place-tpsl-order",
+        body
+    )
+
+
+def modify_stop_loss(
+    symbol,
+    direction,
+    order_id,
+    old_stop,
+    new_stop,
+    size,
+    plan_type
+):
+
+    if symbol not in SYMBOLS:
+        raise RuntimeError("Invalid symbol")
+
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid direction")
+
+    if plan_type not in ("loss_plan", "pos_loss"):
+        raise RuntimeError("Invalid stop plan type")
+
+    if not order_id:
+        raise RuntimeError("Missing stop order ID")
+
+    old_price = positive_number(old_stop)
+    new_price = positive_number(new_stop)
+
+    if direction == "LONG":
+        if new_price < old_price:
+            raise RuntimeError(
+                "LONG stop cannot move backward"
+            )
+
+    if direction == "SHORT":
+        if new_price > old_price:
+            raise RuntimeError(
+                "SHORT stop cannot move backward"
+            )
+
+    if plan_type == "pos_loss":
+        size_text = ""
+    else:
+        positive_number(size)
+        size_text = str(size)
+
+    body = {
+        "symbol": symbol,
+        "productType": PRODUCT_TYPE,
+        "marginCoin": MARGIN_COIN,
+        "orderId": str(order_id),
+        "triggerPrice": str(new_stop),
+        "triggerType": "fill_price",
+        "executePrice": "0",
+        "size": size_text
+    }
+
+    return demo_post(
+        "/api/v2/mix/order/modify-tpsl-order",
+        body
+    )
 def test_post():
 
     account = get_symbol_account("BTCUSDT")
