@@ -102,6 +102,11 @@ class TraderTests(unittest.TestCase):
 
         return {
             **plan,
+            "market_target": plan["target"] + (
+                abs(plan["target"] - plan["entry"])
+                if direction == "LONG"
+                else -abs(plan["target"] - plan["entry"])
+            ),
             "symbol": symbol,
             "direction": direction,
             "strategy": strategy,
