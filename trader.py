@@ -1796,6 +1796,29 @@ def confirm_position_closed(record):
         ):
             continue
 
+                history_entry = number(
+            item.get("openAvgPrice") or 0
+        )
+
+        saved_entry = number(
+            record["entry_price"]
+        )
+
+        if history_entry <= 0 or saved_entry <= 0:
+            continue
+
+        price_step = number(
+            CONTRACTS[symbol]["price_step"]
+        )
+
+        if not math.isclose(
+            history_entry,
+            saved_entry,
+            rel_tol=0,
+            abs_tol=price_step
+        ):
+            continue
+
         matches.append(item)
 
     if len(matches) != 1:
