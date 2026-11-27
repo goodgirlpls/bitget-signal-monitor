@@ -1,0 +1,59 @@
+name: Bitget System Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python Syntax Test
+        run: |
+          python -m py_compile risk.py monitor.py trader.py execution.py protection.py
+          echo "ALL SYNTAX TESTS PASSED"
+
+      - name: Risk Mathematics Test
+        run: |
+          python risk.py
+
+      - name: Module Integration Test
+        run: |
+          python - <<'PY'
+          import risk
+          import monitor
+          import trader
+          import execution
+          import protection
+
+          assert monitor.VERSION == "3.1"
+          assert trader.EXECUTION_ENABLED is False
+
+          assert monitor.MIN_RR == risk.MIN_RR
+          assert monitor.ORB_MIN_RR == risk.ORB_MIN_RR
+
+          assert trader.STRATEGY_MIN_RR["A"] == risk.MIN_RR
+          assert trader.STRATEGY_MIN_RR["B"] == risk.MIN_RR
+          assert trader.STRATEGY_MIN_RR["C"] == risk.MIN_RR
+          assert trader.STRATEGY_MIN_RR["D"] == risk.ORB_MIN_RR
+
+          assert trader.risk_per_unit is risk.risk_per_unit
+          assert monitor.build_risk_plan is risk.build_risk_plan
+          assert trader.build_risk_plan is risk.build_risk_plan
+
+          print("VERSION:", monitor.VERSION)
+          print("EXECUTION ENABLED:", trader.EXECUTION_ENABLED)
+          print("ALL MODULE INTEGRATION TESTS PASSED")
+          PY
