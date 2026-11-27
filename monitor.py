@@ -795,5 +795,527 @@ def main():
         )
 
 
+# =========================
+# STRATEGY D
+# NEW YORK OPENING RANGE BREAKOUT
+# =========================
+
+from zoneinfo import ZoneInfo
+from datetime import timedelta
+
+VERSION = "3.0"
+
+NY_TZ = ZoneInfo("America/New_York")
+DE_TZ = ZoneInfo("Europe/Berlin")
+
+ORB_MIN_RR = 2.0
+ORB_RETEST_TOLERANCE = 0.0005
+ORB_SIGNAL_MAX_AGE_MS = 60000
+
+ABC_ANALYZE_SIGNAL = analyze_signal
+
+
+def get_multi_candles(symbol, granularity):
+
+    intervals = {
+        "1m": 60000,
+        "5m": 300000,
+        "15m": 900000
+    }
+
+    interval = intervals[granularity]
+
+    params = {
+        "symbol": symbol,
+        "productType": "USDT-FUTURES",
+        "granularity": granularity,
+        "limit": "200"
+    }
+
+    url = BASE_URL + "?" + urllib.parse.urlencode(params)
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "BitgetSignalMonitor/3.0"
+        }
+    )
+
+    with urllib.request.urlopen(
+        request, timeout=20
+    ) as response:
+        result = json.load(response)
+
+    if result.get("code") != "00000":
+        raise RuntimeError("Market data API error")
+
+    now_ms = int(
+        datetime.now(timezone.utc).timestamp() * 1000
+    )
+
+    candles = []
+
+    for row in result.get("data") or []:
+
+        candle = {
+            "time": int(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5])
+        }
+
+        if not all(
+            math.isfinite(v)
+            for k, v in candle.items()
+            if k != "time"
+        ):
+            raise RuntimeError("Invalid market data")
+
+        if not (
+            0 < candle["low"]
+            <= candle["open"]
+            <= candle["high"]
+            and candle["low"]
+            <= candle["close"]
+            <= candle["high"]
+            and candle["volume"] >= 0
+        ):
+            raise RuntimeError("Invalid OHLCV")
+
+        if candle["time"] + interval <= now_ms:
+            candles.append(candle)
+
+    candles.sort(key=lambda x: x["time"])
+
+    if not candles:
+        raise RuntimeError("No closed candles")
+
+    times = [c["time"] for c in candles]
+
+    if len(times) != len(set(times)):
+        raise RuntimeError("Duplicate candles")
+
+    if any(
+        b - a != interval
+        for a, b in zip(times, times[1:])
+    ):
+        raise RuntimeError("Missing candles")
+
+    if now_ms - (times[-1] + interval) >= interval:
+        raise RuntimeError("Stale market data")
+
+    return candles
+
+
+def orb_session():
+
+    now_ny = datetime.now(NY_TZ)
+
+    session_open = now_ny.replace(
+        hour=9,
+        minute=30,
+        second=0,
+        microsecond=0
+    )
+
+    range_end = session_open + timedelta(minutes=5)
+
+    session_end = session_open + timedelta(hours=1)
+
+    if now_ny.weekday() >= 5:
+        return None
+
+    if not range_end <= now_ny < session_end:
+        return None
+
+    return {
+        "open": session_open,
+        "range_end": range_end,
+        "end": session_end
+    }
+
+
+def analyze_orb(symbol):
+
+    session = orb_session()
+
+    if session is None:
+        return None
+
+    print(f"\nORB SCAN: {symbol}")
+
+    print(
+        "NEW YORK:",
+        datetime.now(NY_TZ).isoformat()
+    )
+
+    print(
+        "GERMANY:",
+        datetime.now(DE_TZ).isoformat()
+    )
+
+    opening_ms = int(
+        session["open"].timestamp() * 1000
+    )
+
+    range_end_ms = int(
+        session["range_end"].timestamp() * 1000
+    )
+
+    candles_5m = get_multi_candles(
+        symbol, "5m"
+    )
+
+    candles_1m = get_multi_candles(
+        symbol, "1m"
+    )
+
+    opening_candle = next(
+        (
+            c for c in candles_5m
+            if c["time"] == opening_ms
+        ),
+        None
+    )
+
+    if opening_candle is None:
+        print("ORB: OPENING CANDLE NOT FOUND")
+        return None
+
+    orb_high = opening_candle["high"]
+    orb_low = opening_candle["low"]
+
+    print("ORB HIGH:", orb_high)
+    print("ORB LOW:", orb_low)
+
+    session_candles = [
+        c for c in candles_1m
+        if c["time"] >= range_end_ms
+    ]
+
+    if len(session_candles) < 2:
+        return None
+
+    if session_candles[0]["time"] != range_end_ms:
+        return None
+
+    breakout_direction = None
+    breakout_index = None
+
+    for i, candle in enumerate(session_candles[:-1]):
+
+        if (
+            candle["close"] > orb_high
+            and candle["close"] > candle["open"]
+        ):
+            breakout_direction = "LONG"
+            breakout_index = i
+            break
+
+        if (
+            candle["close"] < orb_low
+            and candle["close"] < candle["open"]
+        ):
+            breakout_direction = "SHORT"
+            breakout_index = i
+            break
+
+    if breakout_direction is None:
+        print("ORB: WAITING FOR BREAKOUT")
+        return None
+
+    last = session_candles[-1]
+    price = last["close"]
+
+    retest_candles = session_candles[
+        breakout_index + 1:
+    ]
+
+    if not retest_candles:
+        return None
+
+    direction = breakout_direction
+
+    if direction == "LONG":
+
+        tolerance = (
+            orb_high * ORB_RETEST_TOLERANCE
+        )
+
+        if any(
+            c["close"] < orb_high - tolerance
+            for c in retest_candles
+        ):
+            print("ORB: LONG BREAKOUT INVALIDATED")
+            return None
+
+        def valid_retest(c):
+            return (
+                c["low"] <= orb_high + tolerance
+                and c["close"] > orb_high
+                and c["close"] > c["open"]
+            )
+
+        if not valid_retest(last):
+            print("ORB: WAITING FOR LONG RETEST")
+            return None
+
+        if any(
+            valid_retest(c)
+            for c in retest_candles[:-1]
+        ):
+            print("ORB: FIRST RETEST ALREADY PASSED")
+            return None
+
+        stop = min(
+            c["low"] for c in retest_candles
+        ) - tolerance
+
+        reason = "纽约开盘区间向上突破后首次回踩"
+
+    else:
+
+        tolerance = (
+            orb_low * ORB_RETEST_TOLERANCE
+        )
+
+        if any(
+            c["close"] > orb_low + tolerance
+            for c in retest_candles
+        ):
+            print("ORB: SHORT BREAKOUT INVALIDATED")
+            return None
+
+        def valid_retest(c):
+            return (
+                c["high"] >= orb_low - tolerance
+                and c["close"] < orb_low
+                and c["close"] < c["open"]
+            )
+
+        if not valid_retest(last):
+            print("ORB: WAITING FOR SHORT RETEST")
+            return None
+
+        if any(
+            valid_retest(c)
+            for c in retest_candles[:-1]
+        ):
+            print("ORB: FIRST RETEST ALREADY PASSED")
+            return None
+
+        stop = max(
+            c["high"] for c in retest_candles
+        ) + tolerance
+
+        reason = "纽约开盘区间向下突破后首次反抽"
+
+    if direction == "LONG" and not 0 < stop < price:
+        return None
+
+    if direction == "SHORT" and stop <= price:
+        return None
+
+    stop_distance = abs(price - stop)
+
+    cost_rate = (
+        ENTRY_FEE + EXIT_FEE + 2 * SLIPPAGE
+    )
+
+    risk_per_unit = (
+        stop_distance + price * cost_rate
+    )
+
+    if risk_per_unit <= 0:
+        return None
+
+    quantity = min(
+        MAX_RISK / risk_per_unit,
+        CAPITAL * MAX_LEVERAGE / price
+    )
+
+    notional = quantity * price
+
+    estimated_loss = (
+        quantity * risk_per_unit
+    )
+
+    estimated_cost = (
+        quantity * price * cost_rate
+    )
+
+    target_distance = (
+        ORB_MIN_RR * risk_per_unit
+        + price * cost_rate
+    )
+
+    if direction == "LONG":
+        target = price + target_distance
+    else:
+        target = price - target_distance
+
+    if target <= 0:
+        return None
+
+    net_profit = (
+        abs(target - price) * quantity
+        - estimated_cost
+    )
+
+    net_rr = net_profit / estimated_loss
+
+    if notional < 5:
+        return None
+
+    if net_rr < ORB_MIN_RR - 1e-9:
+        return None
+
+    candle_time = last["time"] + 60000
+
+    now_ms = int(
+        datetime.now(timezone.utc).timestamp() * 1000
+    )
+
+    if not (
+        0 <= now_ms - candle_time
+        < ORB_SIGNAL_MAX_AGE_MS
+    ):
+        print("ORB: SIGNAL EXPIRED")
+        return None
+
+    previous_volumes = [
+        c["volume"]
+        for c in candles_1m[-21:-1]
+    ]
+
+    average_volume = (
+        sum(previous_volumes)
+        / len(previous_volumes)
+        if previous_volumes else 0
+    )
+
+    volume_ratio = (
+        last["volume"] / average_volume
+        if average_volume > 0 else 0
+    )
+
+    signal = {
+        "version": VERSION,
+        "symbol": symbol,
+        "strategy": "D",
+        "reason": reason,
+        "direction": direction,
+        "entry": price,
+        "stop": stop,
+        "target": target,
+        "quantity": quantity,
+        "notional": notional,
+        "estimated_loss": estimated_loss,
+        "estimated_cost": estimated_cost,
+        "net_profit": net_profit,
+        "net_rr": net_rr,
+        "volume_ratio": volume_ratio,
+        "ema_spread": None,
+        "compression": None,
+        "candle_time": candle_time,
+        "timeframe": "1m",
+        "max_age_ms": 60000,
+        "orb_high": orb_high,
+        "orb_low": orb_low,
+        "signal_id": (
+            f"{symbol}-ORB-"
+            f"{session['open'].date()}-"
+            f"{direction}"
+        )
+    }
+
+    print("ORB: CANDIDATE SIGNAL")
+    print("STRATEGY: D")
+    print("DIRECTION:", direction)
+    print("ENTRY:", price)
+    print("STOP:", stop)
+    print("TARGET:", target)
+    print("NET RR:", net_rr)
+
+    return signal
+
+
+# =========================
+# COMBINED STRATEGY ENGINE
+# =========================
+
+def analyze_signal(symbol, candles):
+
+    if orb_session() is not None:
+
+        try:
+            orb_signal = analyze_orb(symbol)
+
+            if orb_signal is not None:
+                return orb_signal
+
+        except Exception as error:
+            print(
+                "ORB SCAN FAILED:",
+                symbol,
+                str(error)
+            )
+
+    signal = ABC_ANALYZE_SIGNAL(
+        symbol, candles
+    )
+
+    if signal is not None:
+        signal["timeframe"] = "15m"
+        signal["max_age_ms"] = 900000
+
+    return signal
+
+
+# =========================
+# UPDATED TELEGRAM MESSAGE
+# =========================
+
+ORIGINAL_FORMAT_SIGNAL = format_signal
+
+
+def format_signal(signal):
+
+    message = ORIGINAL_FORMAT_SIGNAL(signal)
+
+    if signal["strategy"] == "D":
+
+        candle_dt = datetime.fromtimestamp(
+            signal["candle_time"] / 1000,
+            timezone.utc
+        )
+
+        ny_time = candle_dt.astimezone(
+            NY_TZ
+        ).strftime("%H:%M")
+
+        de_time = candle_dt.astimezone(
+            DE_TZ
+        ).strftime("%H:%M")
+
+        message = message.replace(
+            "Bitget 15m 策略",
+            "Bitget ORB 策略"
+        )
+
+        message += (
+            "\n\n纽约开盘区间策略 D"
+            f"\n纽约时间：{ny_time}"
+            f"\n德国时间：{de_time}"
+            f"\n区间最高价：{signal['orb_high']}"
+            f"\n区间最低价：{signal['orb_low']}"
+            "\n入场周期：1分钟"
+        )
+
+    return message
+
+
 if __name__ == "__main__":
     main()
