@@ -1292,6 +1292,157 @@ def confirm_tp1_fill(record, live_position):
     print("REMAINING SIZE:", actual_remaining)
 
     return True
+def activate_breakeven(record, live_position):
+
+    if MODE != "auto_trade" or not EXECUTION_ENABLED:
+        raise RuntimeError("Stop modification disabled")
+
+    if record.get("breakeven_activated"):
+        return False
+
+    if not confirm_tp1_fill(record, live_position):
+        return False
+
+    symbol = record["symbol"]
+    direction = record["direction"]
+
+    side = (
+        "long" if direction == "LONG"
+        else "short"
+    )
+
+    remaining_size = number(
+        live_position["total"]
+    )
+
+    if remaining_size <= 0:
+        raise RuntimeError("No remaining position")
+
+    spec = CONTRACTS[symbol]
+
+    new_stop_text = round_step(
+        record["breakeven_price"],
+        spec["price_step"],
+        upward=direction == "LONG"
+    )
+
+    new_stop = number(new_stop_text)
+
+    old_stop = number(record["current_stop"])
+
+    market_price = number(
+        live_position["markPrice"]
+    )
+
+    if direction == "LONG":
+        if not old_stop <= new_stop < market_price:
+            raise RuntimeError(
+                "Invalid LONG breakeven stop"
+            )
+
+    elif direction == "SHORT":
+        if not market_price < new_stop <= old_stop:
+            raise RuntimeError(
+                "Invalid SHORT breakeven stop"
+            )
+
+    else:
+        raise RuntimeError("Invalid direction")
+
+    plans = get_protection_orders(symbol)
+
+    stop_ids = record.get("stop_order_ids", [])
+
+    stops = [
+        p for p in plans
+        if p.get("symbol") == symbol
+        and p.get("holdSide") == side
+        and p.get("planStatus") == "live"
+        and p.get("tradeSide") == "close"
+        and p.get("planType") in (
+            "loss_plan", "pos_loss"
+        )
+    ]
+
+    if len(stops) != 1:
+        raise RuntimeError(
+            "Unique stop order not confirmed"
+        )
+
+    stop = stops[0]
+
+    stop_id = str(stop.get("orderId", ""))
+
+    if not stop_id or stop_id not in stop_ids:
+        raise RuntimeError("Stop order ID mismatch")
+
+    if stop.get("triggerType") != "fill_price":
+        raise RuntimeError("Unexpected stop trigger type")
+
+    if not math.isclose(
+        number(stop["triggerPrice"]),
+        old_stop,
+        rel_tol=0,
+        abs_tol=1e-8
+    ):
+        raise RuntimeError("Current stop price mismatch")
+
+    # Only modify a verified position-wide stop.
+    # Fixed-size stop behavior requires Demo validation.
+    if stop.get("planType") != "pos_loss":
+        raise RuntimeError(
+            "Position-wide stop required"
+        )
+
+    result = modify_stop_loss(
+        symbol,
+        direction,
+        stop_id,
+        old_stop,
+        new_stop_text,
+        remaining_size,
+        "pos_loss"
+    )
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Invalid breakeven modification response"
+        )
+
+    expected = {
+        "symbol": symbol,
+        "direction": direction,
+        "size": str(remaining_size),
+        "stop": new_stop_text,
+        "target_size": 0
+    }
+
+    protection = verify_protection(expected)
+
+    if not protection.get("verified"):
+        raise RuntimeError(
+            "Breakeven protection not verified"
+        )
+
+    record["remaining_size"] = remaining_size
+    record["current_stop"] = new_stop
+    record["tp1_completed"] = True
+    record["breakeven_activated"] = True
+
+    record["stop_order_ids"] = [
+        str(order_id)
+        for order_id in protection["stop_ids"]
+    ]
+
+    record["target_order_ids"] = []
+    record["status"] = "BREAKEVEN"
+
+    print("BREAKEVEN ACTIVATED")
+    print("OLD STOP:", old_stop)
+    print("NEW STOP:", new_stop)
+    print("REMAINING SIZE:", remaining_size)
+
+    return True
 def scan_market():
 
     snapshot = account_snapshot()
