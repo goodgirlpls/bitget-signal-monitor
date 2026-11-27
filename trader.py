@@ -41,7 +41,8 @@ from execution import (
     place_order,
     get_live_positions,
     place_partial_take_profit,
-    modify_stop_loss
+    modify_stop_loss,
+    get_history_protection_orders
 )
 
 from position_manager import (
@@ -1157,7 +1158,140 @@ def execute_order(order, signal):
 
         raise
 
+def confirm_tp1_fill(record, live_position):
 
+    symbol = record["symbol"]
+    direction = record["direction"]
+
+    tp1_order_id = record.get("tp1_order_id")
+
+    if not tp1_order_id:
+        raise RuntimeError("Missing TP1 order ID")
+
+    opened_at = datetime.fromisoformat(
+        record["opened_at"]
+    )
+
+    start_time = int(
+        opened_at.timestamp() * 1000
+    ) - 60000
+
+    history = get_history_protection_orders(
+        symbol,
+        start_time
+    )
+
+    matches = [
+        p for p in history
+        if str(p.get("orderId")) == str(tp1_order_id)
+    ]
+
+    if not matches:
+        return False
+
+    if len(matches) != 1:
+        raise RuntimeError("Ambiguous TP1 history")
+
+    plan = matches[0]
+
+    expected_side = (
+        "long" if direction == "LONG"
+        else "short"
+    )
+
+    if (
+        str(plan.get("symbol", "")).upper() != symbol
+        or plan.get("planType") != "profit_plan"
+        or plan.get("posSide") != expected_side
+        or plan.get("tradeSide") != "close"
+    ):
+        raise RuntimeError("TP1 identity mismatch")
+
+    status = plan.get("planStatus")
+
+    if status in ("cancelled", "fail_execute"):
+        raise RuntimeError(
+            "TP1 cancelled or execution failed"
+        )
+
+    if status != "executed":
+        return False
+
+    execution_id = plan.get("executeOrderId")
+
+    if not execution_id:
+        return False
+
+    detail = demo_get(
+        "/api/v2/mix/order/detail",
+        {
+            "symbol": symbol,
+            "productType": PRODUCT_TYPE,
+            "orderId": str(execution_id)
+        }
+    )
+
+    if not isinstance(detail, dict):
+        raise RuntimeError("Invalid TP1 execution detail")
+
+    if (
+        str(detail.get("orderId")) != str(execution_id)
+        or str(detail.get("symbol", "")).upper() != symbol
+        or detail.get("posSide") != expected_side
+        or detail.get("tradeSide") != "close"
+    ):
+        raise RuntimeError("TP1 execution identity mismatch")
+
+    if detail.get("state") != "filled":
+        return False
+
+    filled_size = number(detail["baseVolume"])
+    filled_price = number(detail["priceAvg"])
+
+    expected_size = number(record["tp1_size"])
+
+    if filled_price <= 0 or filled_size <= 0:
+        raise RuntimeError("Invalid TP1 fill")
+
+    if not math.isclose(
+        filled_size,
+        expected_size,
+        rel_tol=0,
+        abs_tol=1e-8
+    ):
+        raise RuntimeError("Unexpected TP1 fill size")
+
+    expected_remaining = (
+        number(record["initial_size"])
+        - filled_size
+    )
+
+    if (
+        live_position.get("symbol") != symbol
+        or live_position.get("holdSide") != expected_side
+    ):
+        raise RuntimeError("Remaining position mismatch")
+
+    actual_remaining = number(
+        live_position["total"]
+    )
+
+    if not math.isclose(
+        actual_remaining,
+        expected_remaining,
+        rel_tol=0,
+        abs_tol=1e-8
+    ):
+        raise RuntimeError(
+            "Unexpected remaining position size"
+        )
+
+    print("TP1 FILL CONFIRMED")
+    print("TP1 FILLED SIZE:", filled_size)
+    print("TP1 FILLED PRICE:", filled_price)
+    print("REMAINING SIZE:", actual_remaining)
+
+    return True
 def scan_market():
 
     snapshot = account_snapshot()
