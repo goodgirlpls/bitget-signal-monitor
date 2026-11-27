@@ -812,7 +812,7 @@ def scan_market():
         if approved:
             candidates.append(signal)
 
-      priority = {
+    priority = {
         "D": 0,
         "A": 1,
         "B": 2,
