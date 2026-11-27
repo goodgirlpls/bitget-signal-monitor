@@ -97,9 +97,14 @@ def parse_contract(data):
         data["minTradeUSDT"]
     )
 
-    max_order_size = positive_decimal(
-        data["maxOrderQty"]
-    )
+    raw_max_order_size = data.get("maxOrderQty")
+
+    if raw_max_order_size in (None, ""):
+        max_order_size = None
+    else:
+        max_order_size = positive_decimal(
+            raw_max_order_size
+        )
 
     min_leverage = positive_decimal(
         data["minLever"]
@@ -112,9 +117,11 @@ def parse_contract(data):
     if min_leverage > max_leverage:
         raise ValueError("Invalid leverage limits")
 
-    if min_size > max_order_size:
+    if (
+        max_order_size is not None
+        and min_size > max_order_size
+    ):
         raise ValueError("Invalid order size limits")
-
     quantity_unit = (
         Decimal("10") ** (-volume_place)
     )
@@ -135,8 +142,10 @@ def parse_contract(data):
         "size_step": format(size_step, "f"),
         "min_size": format(min_size, "f"),
         "min_notional": format(min_notional, "f"),
-        "max_order_size": format(
-            max_order_size, "f"
+        "max_order_size": (
+            format(max_order_size, "f")
+            if max_order_size is not None
+            else None
         ),
         "price_place": price_place,
         "volume_place": volume_place,
