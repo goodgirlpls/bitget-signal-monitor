@@ -170,9 +170,25 @@ def verify_protection(order):
                 plan.get("triggerPrice") or 0
             )
 
-            size = number(
-                plan.get("size") or 0
-            )
+            raw_size = plan.get("size")
+            raw_base_volume = plan.get("baseVolume")
+
+            if raw_size in (None, ""):
+                raw_size = raw_base_volume
+
+            elif raw_base_volume not in (None, ""):
+
+                if not math.isclose(
+                    number(raw_size),
+                    number(raw_base_volume),
+                    rel_tol=0,
+                    abs_tol=1e-8
+                ):
+                    raise RuntimeError(
+                        "Conflicting protection order sizes"
+                    )
+
+            size = number(raw_size or 0)
 
             if plan_type in (
                 "pos_loss",
@@ -207,9 +223,19 @@ def verify_protection(order):
                 ):
                     target_size += size
 
-        stop_ok = stop_size >= position_size - 1e-8
-        target_ok = target_size >= position_size - 1e-8
+        stop_ok = math.isclose(
+            stop_size,
+            position_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        )
 
+        target_ok = math.isclose(
+            target_size,
+            position_size,
+            rel_tol=0,
+            abs_tol=1e-8
+        )
         print("Protection check:", attempt + 1)
         print("Position size:", position_size)
         print("Stop covered size:", stop_size)
