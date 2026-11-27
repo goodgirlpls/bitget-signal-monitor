@@ -41,6 +41,20 @@ from protection import (
 MODE = os.environ.get("TRADER_MODE", "check")
 EXECUTION_ENABLED = True
 
+STRATEGY_MAX_AGE = {
+    "A": 900000,
+    "B": 900000,
+    "C": 900000,
+    "D": 60000
+}
+
+STRATEGY_MIN_RR = {
+    "A": MIN_RR,
+    "B": MIN_RR,
+    "C": MIN_RR,
+    "D": 2.0
+}
+
 PRODUCT_TYPE = "USDT-FUTURES"
 MARGIN_COIN = "USDT"
 
@@ -352,10 +366,13 @@ def open_position_risk(snapshot):
 
     return total_risk
 
-
 def check_candidate(signal, snapshot):
 
     symbol = signal["symbol"]
+    strategy = signal["strategy"]
+
+    if strategy not in STRATEGY_MAX_AGE:
+        return False, "Unsupported strategy"
 
     if symbol not in CONTRACTS:
         return False, "Unsupported symbol"
@@ -383,14 +400,22 @@ def check_candidate(signal, snapshot):
         - int(signal["candle_time"])
     )
 
-    if age < 0 or age >= 900000:
+    max_age = STRATEGY_MAX_AGE[strategy]
+
+    if age < 0 or age >= max_age:
         return False, "Signal expired"
 
-    if number(signal["net_rr"]) + 1e-9 < MIN_RR:
+    if (
+        number(signal["net_rr"]) + 1e-9
+        < STRATEGY_MIN_RR[strategy]
+    ):
         return False, "Signal RR too low"
 
-    return True, "Approved"
+    print("APPROVED STRATEGY:", strategy)
+    print("SIGNAL AGE:", age)
+    print("MAX SIGNAL AGE:", max_age)
 
+    return True, "Approved"
 
 def build_order(signal, snapshot, risk_budget):
 
@@ -459,13 +484,18 @@ def build_order(signal, snapshot, risk_budget):
     if unit_risk <= 0:
         raise RuntimeError("Invalid unit risk")
 
-    net_rr = unit_profit / unit_risk
+      net_rr = unit_profit / unit_risk
 
-    if net_rr + 1e-9 < MIN_RR:
-        raise RuntimeError("Rounded RR below minimum")
+    required_rr = STRATEGY_MIN_RR[
+        signal["strategy"]
+    ]
+
+    if net_rr + 1e-9 < required_rr:
+        raise RuntimeError(
+            "Rounded RR below strategy minimum"
+        )
 
     risk_size = risk_budget / unit_risk
-
     margin_size = (
         snapshot["available"] * 0.80
         / (
@@ -575,8 +605,14 @@ def execute_order(order, signal):
         - int(signal["candle_time"])
     )
 
-    if age < 0 or age >= 900000:
+       max_age = STRATEGY_MAX_AGE[
+        signal["strategy"]
+    ]
+
+    if age < 0 or age >= max_age:
         print("SIGNAL EXPIRED")
+        print("STRATEGY:", signal["strategy"])
+        print("SIGNAL AGE:", age)
         return False
 
     print("ORDER SUBMISSION")
@@ -776,7 +812,12 @@ def scan_market():
         if approved:
             candidates.append(signal)
 
-    priority = {"A": 0, "B": 1, "C": 2}
+      priority = {
+        "D": 0,
+        "A": 1,
+        "B": 2,
+        "C": 3
+    }
 
     candidates.sort(
         key=lambda s: priority.get(s["strategy"], 99)
