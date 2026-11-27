@@ -45,7 +45,7 @@ def decimal_places(value):
     return int(result)
 
 
- def parse_contract(data):
+def parse_contract(data):
 
     print("RAW CONTRACT DATA:")
     print(json.dumps(data, indent=2))
@@ -57,7 +57,6 @@ def decimal_places(value):
 
     if data["symbolType"] != "perpetual":
         raise ValueError("Not a perpetual contract")
-
     if data["quoteCoin"] != "USDT":
         raise ValueError("Unexpected quote coin")
 
