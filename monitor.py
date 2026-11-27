@@ -5,12 +5,21 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from risk import (
+    ENTRY_FEE,
+    EXIT_FEE,
+    SLIPPAGE,
+    MIN_RR,
+    ORB_MIN_RR,
+    build_risk_plan
+)
+
 
 # =========================
 # STRATEGY SETTINGS
 # =========================
 
-VERSION = "2.0"
+VERSION = "3.1"
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
@@ -21,11 +30,6 @@ MAX_RISK = 5.0
 MAX_DAILY_LOSS = 10.0
 MAX_POSITIONS = 3
 MAX_LEVERAGE = 100
-MIN_RR = 1.8
-
-ENTRY_FEE = 0.0006
-EXIT_FEE = 0.0006
-SLIPPAGE = 0.0005
 
 VOLUME_RATIO = 1.2
 
@@ -532,10 +536,8 @@ def analyze_signal(symbol, candles):
             c["low"] for c in candles[-5:]
         )
 
-        if stop >= price:
+        if not 0 < stop < price:
             return None
-
-        stop_distance = price - stop
 
     else:
         stop = max(
@@ -545,54 +547,27 @@ def analyze_signal(symbol, candles):
         if stop <= price:
             return None
 
-        stop_distance = stop - price
+    try:
+        plan = build_risk_plan(
+            entry=price,
+            stop=stop,
+            direction=direction,
+            risk_budget=MAX_RISK,
+            max_notional=CAPITAL * MAX_LEVERAGE,
+            required_rr=MIN_RR
+        )
 
-    cost_rate = (
-        ENTRY_FEE + EXIT_FEE + 2 * SLIPPAGE
-    )
-
-    risk_per_unit = (
-        stop_distance + price * cost_rate
-    )
-
-    if risk_per_unit <= 0:
+    except ValueError as error:
+        print("RISK PLAN REJECTED:", str(error))
         return None
 
-    quantity = min(
-        MAX_RISK / risk_per_unit,
-        CAPITAL * MAX_LEVERAGE / price
-    )
-
-    notional = quantity * price
-    estimated_loss = quantity * risk_per_unit
-    estimated_cost = quantity * price * cost_rate
-
-    target_distance = (
-        MIN_RR * risk_per_unit
-        + price * cost_rate
-    )
-
-    if direction == "LONG":
-        target = price + target_distance
-        gross_profit = (
-            target - price
-        ) * quantity
-    else:
-        target = price - target_distance
-
-        if target <= 0:
-            return None
-
-        gross_profit = (
-            price - target
-        ) * quantity
-
-    net_profit = gross_profit - estimated_cost
-
-    if estimated_loss <= 0:
-        return None
-
-    net_rr = net_profit / estimated_loss
+    target = plan["target"]
+    quantity = plan["quantity"]
+    notional = plan["notional"]
+    estimated_loss = plan["estimated_loss"]
+    estimated_cost = plan["estimated_cost"]
+    net_profit = plan["net_profit"]
+    net_rr = plan["net_rr"]
 
     if notional < 5 or net_rr < MIN_RR - 1e-9:
         print("DECISION: REJECTED")
@@ -805,12 +780,10 @@ def main():
 from zoneinfo import ZoneInfo
 from datetime import timedelta
 
-VERSION = "3.0"
 
 NY_TZ = ZoneInfo("America/New_York")
 DE_TZ = ZoneInfo("Europe/Berlin")
 
-ORB_MIN_RR = 2.0
 ORB_RETEST_TOLERANCE = 0.0005
 ORB_SIGNAL_MAX_AGE_MS = 60000
 
@@ -1158,53 +1131,27 @@ def analyze_orb(symbol):
     if direction == "SHORT" and stop <= price:
         return None
 
-    stop_distance = abs(price - stop)
+    try:
+        plan = build_risk_plan(
+            entry=price,
+            stop=stop,
+            direction=direction,
+            risk_budget=MAX_RISK,
+            max_notional=CAPITAL * MAX_LEVERAGE,
+            required_rr=ORB_MIN_RR
+        )
 
-    cost_rate = (
-        ENTRY_FEE + EXIT_FEE + 2 * SLIPPAGE
-    )
-
-    risk_per_unit = (
-        stop_distance + price * cost_rate
-    )
-
-    if risk_per_unit <= 0:
+    except ValueError as error:
+        print("ORB RISK PLAN REJECTED:", str(error))
         return None
 
-    quantity = min(
-        MAX_RISK / risk_per_unit,
-        CAPITAL * MAX_LEVERAGE / price
-    )
-
-    notional = quantity * price
-
-    estimated_loss = (
-        quantity * risk_per_unit
-    )
-
-    estimated_cost = (
-        quantity * price * cost_rate
-    )
-
-    target_distance = (
-        ORB_MIN_RR * risk_per_unit
-        + price * cost_rate
-    )
-
-    if direction == "LONG":
-        target = price + target_distance
-    else:
-        target = price - target_distance
-
-    if target <= 0:
-        return None
-
-    net_profit = (
-        abs(target - price) * quantity
-        - estimated_cost
-    )
-
-    net_rr = net_profit / estimated_loss
+    target = plan["target"]
+    quantity = plan["quantity"]
+    notional = plan["notional"]
+    estimated_loss = plan["estimated_loss"]
+    estimated_cost = plan["estimated_cost"]
+    net_profit = plan["net_profit"]
+    net_rr = plan["net_rr"]
 
     if notional < 5:
         return None
