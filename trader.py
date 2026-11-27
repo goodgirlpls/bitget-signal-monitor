@@ -59,6 +59,11 @@ from protection import (
 )
 from contracts import fetch_contracts
 
+from market_space import (
+    calculate_atr,
+    find_structure_levels
+)
+
 from state_store import load_state, save_state
 
 MODE = os.environ.get("TRADER_MODE", "check")
@@ -1441,6 +1446,229 @@ def activate_breakeven(record, live_position):
     print("OLD STOP:", old_stop)
     print("NEW STOP:", new_stop)
     print("REMAINING SIZE:", remaining_size)
+
+    return True
+def update_trailing_stop(record, live_position):
+
+    if MODE != "auto_trade" or not EXECUTION_ENABLED:
+        raise RuntimeError("Stop modification disabled")
+
+    if not record.get("tp1_completed"):
+        return False
+
+    if not record.get("breakeven_activated"):
+        return False
+
+    symbol = record["symbol"]
+    direction = record["direction"]
+
+    if direction not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid direction")
+
+    is_long = direction == "LONG"
+    side = "long" if is_long else "short"
+
+    if (
+        live_position.get("symbol") != symbol
+        or live_position.get("holdSide") != side
+    ):
+        raise RuntimeError("Position identity mismatch")
+
+    market_price = number(
+        live_position["markPrice"]
+    )
+
+    remaining_size = number(
+        live_position["total"]
+    )
+
+    if remaining_size <= 0 or market_price <= 0:
+        raise RuntimeError("Invalid position data")
+
+    if not math.isclose(
+        remaining_size,
+        number(record["remaining_size"]),
+        rel_tol=0,
+        abs_tol=1e-8
+    ):
+        raise RuntimeError("Position size mismatch")
+
+    trail_start = number(
+        record["trail_start_price"]
+    )
+
+    if not record.get("trailing_activated"):
+
+        reached = (
+            market_price >= trail_start
+            if is_long
+            else market_price <= trail_start
+        )
+
+        if not reached:
+            return False
+
+        record["trailing_activated"] = True
+        record["status"] = "TRAILING"
+
+        print("TRAILING ACTIVATED:", symbol)
+
+        return True
+
+    candles = get_candles(symbol)
+
+    now = int(time.time() * 1000)
+
+    candles = [
+        c for c in candles
+        if c["time"] + 900000 <= now
+    ]
+
+    if len(candles) < 30:
+        return False
+
+    atr = calculate_atr(candles)
+
+    levels = find_structure_levels(candles)
+
+    if is_long:
+
+        valid_levels = [
+            level for level in levels["support"]
+            if level < market_price
+        ]
+
+        if not valid_levels:
+            return False
+
+        structure_level = max(valid_levels)
+
+    else:
+
+        valid_levels = [
+            level for level in levels["resistance"]
+            if level > market_price
+        ]
+
+        if not valid_levels:
+            return False
+
+        structure_level = min(valid_levels)
+
+    old_stop = number(record["current_stop"])
+
+    candidate = calculate_trailing_stop(
+        direction,
+        old_stop,
+        structure_level,
+        atr,
+        market_price
+    )
+
+    spec = CONTRACTS[symbol]
+
+    new_stop_text = round_step(
+        candidate,
+        spec["price_step"],
+        upward=not is_long
+    )
+
+    new_stop = number(new_stop_text)
+
+    if is_long:
+        if not old_stop < new_stop < market_price:
+            return False
+
+    else:
+        if not market_price < new_stop < old_stop:
+            return False
+
+    plans = get_protection_orders(symbol)
+
+    stops = [
+        p for p in plans
+        if p.get("symbol") == symbol
+        and p.get("holdSide") == side
+        and p.get("planStatus") == "live"
+        and p.get("tradeSide") == "close"
+        and p.get("planType") in (
+            "loss_plan", "pos_loss"
+        )
+    ]
+
+    if len(stops) != 1:
+        raise RuntimeError(
+            "Unique trailing stop not confirmed"
+        )
+
+    stop = stops[0]
+
+    stop_id = str(stop.get("orderId", ""))
+
+    if stop_id not in record.get("stop_order_ids", []):
+        raise RuntimeError("Stop ID mismatch")
+
+    if stop.get("planType") != "pos_loss":
+        raise RuntimeError(
+            "Position-wide stop required"
+        )
+
+    if stop.get("triggerType") != "fill_price":
+        raise RuntimeError("Unexpected trigger type")
+
+    if not math.isclose(
+        number(stop["triggerPrice"]),
+        old_stop,
+        rel_tol=0,
+        abs_tol=1e-8
+    ):
+        raise RuntimeError("Current stop mismatch")
+
+    result = modify_stop_loss(
+        symbol,
+        direction,
+        stop_id,
+        old_stop,
+        new_stop_text,
+        remaining_size,
+        "pos_loss"
+    )
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Invalid trailing modification response"
+        )
+
+    expected = {
+        "symbol": symbol,
+        "direction": direction,
+        "size": str(remaining_size),
+        "stop": new_stop_text,
+        "target_size": 0
+    }
+
+    protection = verify_protection(expected)
+
+    if not protection.get("verified"):
+        raise RuntimeError(
+            "Trailing protection not verified"
+        )
+
+    record["current_stop"] = new_stop
+
+    record["stop_order_ids"] = [
+        str(order_id)
+        for order_id in protection["stop_ids"]
+    ]
+
+    record["status"] = "TRAILING"
+
+    print("TRAILING STOP UPDATED")
+    print("SYMBOL:", symbol)
+    print("STRUCTURE LEVEL:", structure_level)
+    print("ATR:", atr)
+    print("OLD STOP:", old_stop)
+    print("NEW STOP:", new_stop)
 
     return True
 def scan_market():
