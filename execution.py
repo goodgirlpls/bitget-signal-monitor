@@ -458,6 +458,44 @@ def get_history_protection_orders(symbol, start_time):
         )
 
     return records
+def inspect_stop_plans():
+
+    print("\n===== STOP PLAN DIAGNOSTICS =====")
+
+    start_time = int(time.time() * 1000) - 86400000
+
+    for symbol in SYMBOLS:
+
+        print("\nSYMBOL:", symbol)
+
+        positions = get_live_positions(symbol)
+
+        print("LIVE POSITIONS:")
+        print(json.dumps(positions, indent=2))
+
+        pending = demo_get(
+            "/api/v2/mix/order/orders-plan-pending",
+            {
+                "symbol": symbol,
+                "productType": PRODUCT_TYPE,
+                "planType": "profit_loss",
+                "limit": "100"
+            }
+        )
+
+        print("PENDING PROTECTION:")
+        print(json.dumps(pending, indent=2))
+
+        history = get_history_protection_orders(
+            symbol,
+            start_time
+        )
+
+        print("PROTECTION HISTORY:")
+        print(json.dumps(history, indent=2))
+
+    print("STOP PLAN DIAGNOSTICS COMPLETED")
+    print("NO ORDERS WERE PLACED")
 def test_post():
 
     account = get_symbol_account("BTCUSDT")
@@ -541,8 +579,8 @@ def main():
 
 if __name__ == "__main__":
     main()
-    test_post()
     test_history()
+    inspect_stop_plans()
 
     print("\n===== EXECUTION MODULE READY =====")
     print("Order function loaded:", callable(place_order))
