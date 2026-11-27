@@ -1114,6 +1114,216 @@ class TraderTests(unittest.TestCase):
             ):
 
                 trader.confirm_position_closed(record)
+    def test_closed_position_identity_success(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "initial_size": 0.01,
+            "entry_price": 60000.0,
+            "opened_at": "2026-11-27T12:00:00+00:00"
+        }
+
+        history = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "ctime": "1795780800000",
+            "utime": "1795784400000",
+            "openTotalPos": "0.01",
+            "closeTotalPos": "0.01",
+            "openAvgPrice": "60000.0",
+            "netProfit": "8.5"
+        }
+
+        with patch(
+            "trader.get_history_positions",
+            return_value={"list": [history]}
+        ), patch(
+            "trader.account_snapshot",
+            return_value={"positions": [], "pending": []}
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[]
+        ):
+            result = trader.confirm_position_closed(record)
+            self.assertEqual(result, 8.5)
+
+    def test_closed_position_wrong_entry(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "initial_size": 0.01,
+            "entry_price": 60000.0,
+            "opened_at": "2026-11-27T12:00:00+00:00"
+        }
+
+        history = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "ctime": "1795780800000",
+            "utime": "1795784400000",
+            "openTotalPos": "0.01",
+            "closeTotalPos": "0.01",
+            "openAvgPrice": "60100.0",
+            "netProfit": "8.5"
+        }
+
+        with patch(
+            "trader.get_history_positions",
+            return_value={"list": [history]}
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Closed position history not uniquely confirmed"
+            ):
+                trader.confirm_position_closed(record)
+
+    def test_breakeven_verification_failure(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "breakeven_activated": False,
+            "breakeven_price": 60150.0,
+            "current_stop": 59800.0,
+            "remaining_size": 0.01,
+            "stop_order_ids": ["STOP-1"],
+            "status": "ACTIVE"
+        }
+
+        position = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "total": "0.005",
+            "markPrice": "61000"
+        }
+
+        plans = [{
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "planStatus": "live",
+            "tradeSide": "close",
+            "planType": "loss_plan",
+            "orderId": "STOP-1",
+            "triggerType": "fill_price",
+            "triggerPrice": "59800"
+        }]
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", True), \
+             patch("trader.confirm_tp1_fill", return_value=True), \
+             patch("trader.get_protection_orders", return_value=plans), \
+             patch("trader.modify_stop_loss", return_value={"orderId": "STOP-1"}), \
+             patch("trader.verify_protection", return_value={"verified": False}):
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Breakeven protection not verified"
+            ):
+                trader.activate_breakeven(record, position)
+
+            self.assertFalse(record["breakeven_activated"])
+            self.assertEqual(record["current_stop"], 59800.0)
+            self.assertEqual(record["status"], "ACTIVE")
+
+    def test_trailing_stop_update_success(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "tp1_completed": True,
+            "breakeven_activated": True,
+            "trailing_activated": True,
+            "trail_start_price": 61000.0,
+            "current_stop": 60150.0,
+            "remaining_size": 0.005,
+            "stop_order_ids": ["STOP-1"],
+            "status": "TRAILING"
+        }
+
+        position = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "total": "0.005",
+            "markPrice": "62000"
+        }
+
+        plans = [{
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "planStatus": "live",
+            "tradeSide": "close",
+            "planType": "loss_plan",
+            "orderId": "STOP-1",
+            "triggerType": "fill_price",
+            "triggerPrice": "60150"
+        }]
+
+        candles = [{"time": 0}] * 40
+
+        with patch("trader.MODE", "auto_trade"), \
+             patch("trader.EXECUTION_ENABLED", True), \
+             patch("trader.get_candles", return_value=candles), \
+             patch("trader.calculate_atr", return_value=100.0), \
+             patch("trader.find_structure_levels", return_value={
+                 "support": [61000.0],
+                 "resistance": []
+             }), \
+             patch("trader.get_protection_orders", return_value=plans), \
+             patch("trader.modify_stop_loss", return_value={
+                 "orderId": "STOP-1"
+             }) as modify, \
+             patch("trader.verify_protection", return_value={
+                 "verified": True,
+                 "stop_ids": ["STOP-1"]
+             }):
+
+            result = trader.update_trailing_stop(
+                record, position
+            )
+
+            self.assertTrue(result)
+            self.assertEqual(record["current_stop"], 60985.0)
+            self.assertEqual(record["status"], "TRAILING")
+            modify.assert_called_once()
+
+    def test_closed_position_residual_protection(self):
+
+        record = {
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "initial_size": 0.01,
+            "entry_price": 60000.0,
+            "opened_at": "2026-11-27T12:00:00+00:00"
+        }
+
+        history = {
+            "symbol": "BTCUSDT",
+            "holdSide": "long",
+            "ctime": "1795780800000",
+            "utime": "1795784400000",
+            "openTotalPos": "0.01",
+            "closeTotalPos": "0.01",
+            "openAvgPrice": "60000.0",
+            "netProfit": "8.5"
+        }
+
+        with patch(
+            "trader.get_history_positions",
+            return_value={"list": [history]}
+        ), patch(
+            "trader.account_snapshot",
+            return_value={"positions": [], "pending": []}
+        ), patch(
+            "trader.get_protection_orders",
+            return_value=[{"orderId": "STOP-1"}]
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Residual protection orders"
+            ):
+                trader.confirm_position_closed(record)
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
