@@ -1072,6 +1072,14 @@ def execute_order(order, signal):
                 "Partial TP order ID missing"
             )
 
+        state["positions"][position_key]["tp1_order_id"] = str(
+            partial_tp["orderId"]
+        )
+
+        state_sha = save_state(state, state_sha)
+
+        print("TP1 ORDER ID SAVED")
+
         updated_order = dict(order)
         updated_order["target"] = tp1_price_text
         updated_order["target_size"] = tp1_size_text
@@ -1083,6 +1091,21 @@ def execute_order(order, signal):
                 "Partial TP protection not verified"
             )
 
+        state["positions"][position_key]["stop_order_ids"] = [
+            str(order_id)
+            for order_id in protection["stop_ids"]
+        ]
+
+        state["positions"][position_key]["target_order_ids"] = [
+            str(order_id)
+            for order_id in protection["target_ids"]
+        ]
+
+        state["positions"][position_key]["status"] = "ACTIVE"
+
+        state_sha = save_state(state, state_sha)
+
+        print("PROTECTION ORDER IDS SAVED")
         print("PARTIAL TP VERIFIED")
         print("ACTUAL FILL SIZE:", actual_size)
         print("ACTUAL FILL PRICE:", actual_price)
