@@ -260,8 +260,10 @@ def daily_loss():
 
 
 
-
 def open_position_risk(snapshot):
+
+    state, _ = load_state()
+    records = state["positions"]
 
     total_risk = 0.0
 
@@ -270,160 +272,170 @@ def open_position_risk(snapshot):
         for p in snapshot["positions"]
     }
 
-    protection_cache = {}
-
     for symbol in SYMBOLS:
 
         plans = get_protection_orders(symbol)
 
         if len(plans) >= 100:
-            raise RuntimeError("Plan pagination required")
+            raise RuntimeError(
+                "Protection pagination required"
+            )
 
         if plans and symbol not in active_symbols:
             raise RuntimeError(
                 f"Residual protection orders: {symbol}"
             )
 
-        protection_cache[symbol] = plans
-
     for position in snapshot["positions"]:
 
         symbol = position["symbol"]
+        side = position["holdSide"]
 
         if symbol not in CONTRACTS:
-            raise RuntimeError("Unknown active position")
-
-        side = position["holdSide"]
-        size = number(position["total"])
-        entry = number(position["openPriceAvg"])
+            raise RuntimeError("Unknown position symbol")
 
         if side not in ("long", "short"):
             raise RuntimeError("Invalid position side")
 
-        if size <= 0 or entry <= 0:
-            raise RuntimeError("Invalid position data")
-
-        plans = protection_cache[symbol]
-
-        stops = []
-        targets = []
-        stop_size = 0.0
-        target_size = 0.0
-        seen_ids = set()
-
-        for plan in plans:
-
-            if plan.get("symbol") != symbol:
-                continue
-
-            if plan.get("holdSide") != side:
-                continue
-
-            if plan.get("planStatus") != "live":
-                continue
-
-            if plan.get("tradeSide") != "close":
-                continue
-
-            order_id = plan.get("orderId")
-
-            if not order_id:
-                raise RuntimeError("Missing protection ID")
-
-            if order_id in seen_ids:
-                continue
-
-            seen_ids.add(order_id)
-
-            plan_type = plan.get("planType")
-
-            trigger = number(
-                plan.get("triggerPrice") or 0
-            )
-
-            raw_size = plan.get("size")
-            raw_base_volume = plan.get("baseVolume")
-
-            if raw_size in (None, ""):
-                raw_size = raw_base_volume
-
-            elif raw_base_volume not in (None, ""):
-
-                if not math.isclose(
-                    number(raw_size),
-                    number(raw_base_volume),
-                    rel_tol=0,
-                    abs_tol=1e-8
-                ):
-                    raise RuntimeError(
-                        "Conflicting protection order sizes"
-                    )
-
-            covered_size = number(raw_size or 0)
-
-            if plan_type in ("pos_loss", "pos_profit"):
-                covered_size = size
-
-            if covered_size <= 0 or trigger <= 0:
-                continue
-
-            if plan_type in ("loss_plan", "pos_loss"):
-                stops.append(trigger)
-                stop_size += covered_size
-
-            elif plan_type in ("profit_plan", "pos_profit"):
-                targets.append(trigger)
-                target_size += covered_size
-
-        if not stops or not targets:
-            raise RuntimeError(
-                f"Unverified protection: {symbol}"
-            )
-
-        if not math.isclose(
-            stop_size,
-            size,
-            rel_tol=0,
-            abs_tol=1e-8
-        ):
-            raise RuntimeError(
-                f"Invalid stop coverage: {symbol}"
-            )
-
-        if not math.isclose(
-            target_size,
-            size,
-            rel_tol=0,
-            abs_tol=1e-8
-        ):
-            raise RuntimeError(
-                f"Invalid target coverage: {symbol}"
-            )
-
-        stop = (
-            min(stops)
-            if side == "long"
-            else max(stops)
+        direction = (
+            "LONG" if side == "long"
+            else "SHORT"
         )
 
-        risk = size * risk_per_unit(entry, stop)
+        key = symbol + ":" + direction
+
+        record = records.get(key)
+
+        if record is None:
+            raise RuntimeError(
+                f"Unmanaged position: {key}"
+            )
+
+        size = number(position["total"])
+        entry = number(position["openPriceAvg"])
+        stop = number(record["current_stop"])
+
+        if min(size, entry, stop) <= 0:
+            raise RuntimeError("Invalid position data")
+
+        if not math.isclose(
+            size,
+            number(record["remaining_size"]),
+            rel_tol=0,
+            abs_tol=1e-8
+        ):
+            raise RuntimeError(
+                f"Position size mismatch: {key}"
+            )
+
+        status = record.get("status")
+
+        if status == "ACTIVE":
+
+            target_size = number(
+                record["tp1_size"]
+            )
+
+        elif status in ("BREAKEVEN", "TRAILING"):
+
+            if not record.get("tp1_completed"):
+                raise RuntimeError(
+                    "TP1 state inconsistent"
+                )
+
+            if not record.get("breakeven_activated"):
+                raise RuntimeError(
+                    "Breakeven state inconsistent"
+                )
+
+            target_size = 0.0
+
+        else:
+
+            raise RuntimeError(
+                f"Unresolved position state: {key}"
+            )
+
+        expected = {
+            "symbol": symbol,
+            "direction": direction,
+            "size": str(size),
+            "stop": str(stop),
+            "target": str(record["tp1_price"]),
+            "target_size": str(target_size)
+        }
+
+        protection = verify_protection(expected)
+
+        if not protection.get("verified"):
+            raise RuntimeError(
+                f"Protection not verified: {key}"
+            )
+
+        actual_stop_ids = {
+            str(x) for x in protection["stop_ids"]
+        }
+
+        saved_stop_ids = {
+            str(x)
+            for x in record.get("stop_order_ids", [])
+        }
+
+        if actual_stop_ids != saved_stop_ids:
+            raise RuntimeError("Stop identity mismatch")
+
+        actual_target_ids = {
+            str(x) for x in protection["target_ids"]
+        }
+
+        saved_target_ids = {
+            str(x)
+            for x in record.get("target_order_ids", [])
+        }
+
+        if actual_target_ids != saved_target_ids:
+            raise RuntimeError("Target identity mismatch")
+
+        if direction == "LONG":
+
+            price_loss = entry - stop
+
+        else:
+
+            price_loss = stop - entry
+
+        estimated_cost = (
+            entry * (ENTRY_FEE + SLIPPAGE)
+            + stop * (EXIT_FEE + SLIPPAGE)
+        )
+
+        stop_risk = size * max(
+            0.0,
+            price_loss + estimated_cost
+        )
 
         unrealized_loss = max(
             0.0,
             -number(position["unrealizedPL"])
         )
 
-        reserved = max(risk, unrealized_loss)
+        reserved = max(
+            stop_risk,
+            unrealized_loss
+        )
 
         total_risk += reserved
 
-        print(
-            "OPEN RISK:",
-            symbol,
-            round(reserved, 4)
-        )
+        print("===== POSITION RISK =====")
+        print("SYMBOL:", symbol)
+        print("STATUS:", status)
+        print("REMAINING SIZE:", size)
+        print("CURRENT STOP:", stop)
+        print("STOP RISK:", round(stop_risk, 4))
+        print("RESERVED RISK:", round(reserved, 4))
 
-    return total_risk
+return total_risk
+
 
 def check_candidate(signal, snapshot):
 
