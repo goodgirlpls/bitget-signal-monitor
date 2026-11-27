@@ -1327,5 +1327,57 @@ def format_signal(signal):
     return message
 
 
+# =========================
+# V4.0 MARKET SPACE FILTER
+# =========================
+
+from market_space import apply_market_filter
+
+BASE_ANALYZE_SIGNAL = analyze_signal
+
+
+def analyze_signal(symbol, candles):
+
+    signal = BASE_ANALYZE_SIGNAL(symbol, candles)
+
+    if signal is None:
+        return None
+
+    market_candles = [
+        c for c in candles
+        if c["time"] + CANDLE_MS
+        <= signal["candle_time"]
+    ]
+
+    return apply_market_filter(
+        signal,
+        market_candles
+    )
+
+
+BASE_FORMAT_SIGNAL = format_signal
+
+
+def format_signal(signal):
+
+    message = BASE_FORMAT_SIGNAL(signal)
+
+    if "market_rr" in signal:
+
+        message += (
+            "\n\n===== 市场盈利空间 ====="
+            f"\n关键支撑/阻力："
+            f"{signal['market_obstacle']:.6f}"
+            f"\n市场参考目标："
+            f"{signal['market_target']:.6f}"
+            f"\n市场净盈亏比："
+            f"1:{signal['market_rr']:.2f}"
+            f"\nATR：{signal['market_atr']:.6f}"
+            "\n市场空间检查：通过"
+        )
+
+    return message
+
+
 if __name__ == "__main__":
     main()
