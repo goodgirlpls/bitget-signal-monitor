@@ -42,7 +42,26 @@ def get_protection_orders(symbol):
     if not isinstance(orders, list):
         raise RuntimeError("Invalid protection order list")
 
-    return orders
+    normalized_orders = []
+
+    for raw_plan in orders:
+
+        if not isinstance(raw_plan, dict):
+            raise RuntimeError("Invalid protection order")
+
+        plan = dict(raw_plan)
+
+        pos_side = plan.get("posSide")
+        hold_side = plan.get("holdSide")
+
+        if pos_side and hold_side and pos_side != hold_side:
+            raise RuntimeError("Conflicting position sides")
+
+        plan["holdSide"] = pos_side or hold_side
+
+        normalized_orders.append(plan)
+
+    return normalized_orders
 
 
 def get_active_positions(symbol):
@@ -68,6 +87,9 @@ def get_active_positions(symbol):
 def verify_protection(order):
     symbol = order["symbol"]
 
+    if order["direction"] not in ("LONG", "SHORT"):
+        raise RuntimeError("Invalid order direction")
+
     expected_side = (
         "long"
         if order["direction"] == "LONG"
@@ -86,6 +108,7 @@ def verify_protection(order):
     print("EXPECTED SIZE:", expected_size)
 
     for attempt in range(5):
+
         time.sleep(2)
 
         positions = get_active_positions(symbol)
@@ -112,15 +135,14 @@ def verify_protection(order):
 
         stop_size = 0.0
         target_size = 0.0
-
-        print("PROTECTION ORDERS FOUND:", len(plans))
+        seen_ids = set()
 
         for plan in plans:
+
             print("CHECKING PLAN:")
             print(json.dumps(plan, indent=2))
 
             if plan.get("symbol") != symbol:
-                print("REJECTED: SYMBOL MISMATCH")
                 continue
 
             if plan.get("holdSide") != expected_side:
@@ -130,6 +152,17 @@ def verify_protection(order):
             if plan.get("planStatus") != "live":
                 print("REJECTED: STATUS MISMATCH")
                 continue
+
+            if plan.get("tradeSide") != "close":
+                print("REJECTED: NOT A CLOSE ORDER")
+                continue
+
+            order_id = plan.get("orderId")
+
+            if not order_id or order_id in seen_ids:
+                continue
+
+            seen_ids.add(order_id)
 
             plan_type = plan.get("planType")
 
@@ -147,6 +180,9 @@ def verify_protection(order):
             ):
                 size = position_size
 
+            if size <= 0:
+                continue
+
             if plan_type in (
                 "loss_plan",
                 "pos_loss"
@@ -158,8 +194,6 @@ def verify_protection(order):
                     abs_tol=1e-8
                 ):
                     stop_size += size
-                else:
-                    print("STOP PRICE MISMATCH")
 
             elif plan_type in (
                 "profit_plan",
@@ -172,11 +206,6 @@ def verify_protection(order):
                     abs_tol=1e-8
                 ):
                     target_size += size
-                else:
-                    print("TARGET PRICE MISMATCH")
-
-            else:
-                print("UNKNOWN PLAN TYPE:", plan_type)
 
         stop_ok = stop_size >= position_size - 1e-8
         target_ok = target_size >= position_size - 1e-8
@@ -187,6 +216,7 @@ def verify_protection(order):
         print("Target covered size:", target_size)
 
         if stop_ok and target_ok:
+
             print("PROTECTION VERIFIED")
 
             return {
@@ -210,6 +240,7 @@ def main():
         "ETHUSDT",
         "SOLUSDT"
     ]:
+
         positions = get_active_positions(symbol)
         plans = get_protection_orders(symbol)
 
