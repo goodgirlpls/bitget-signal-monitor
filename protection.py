@@ -1,5 +1,6 @@
 import time
 import math
+import json
 
 from execution import demo_get
 
@@ -8,7 +9,6 @@ MARGIN_COIN = "USDT"
 
 
 def number(value):
-
     result = float(value)
 
     if not math.isfinite(result):
@@ -18,7 +18,6 @@ def number(value):
 
 
 def get_protection_orders(symbol):
-
     result = demo_get(
         "/api/v2/mix/order/orders-plan-pending",
         {
@@ -28,6 +27,9 @@ def get_protection_orders(symbol):
             "limit": "100"
         }
     )
+
+    print("PROTECTION RAW RESPONSE:")
+    print(json.dumps(result, indent=2))
 
     if not isinstance(result, dict):
         raise RuntimeError("Invalid protection response")
@@ -44,7 +46,6 @@ def get_protection_orders(symbol):
 
 
 def get_active_positions(symbol):
-
     result = demo_get(
         "/api/v2/mix/position/all-position",
         {
@@ -65,7 +66,6 @@ def get_active_positions(symbol):
 
 
 def verify_protection(order):
-
     symbol = order["symbol"]
 
     expected_side = (
@@ -78,8 +78,14 @@ def verify_protection(order):
     expected_target = number(order["target"])
     expected_size = number(order["size"])
 
-    for attempt in range(5):
+    print("===== PROTECTION VERIFICATION =====")
+    print("SYMBOL:", symbol)
+    print("EXPECTED SIDE:", expected_side)
+    print("EXPECTED STOP:", expected_stop)
+    print("EXPECTED TARGET:", expected_target)
+    print("EXPECTED SIZE:", expected_size)
 
+    for attempt in range(5):
         time.sleep(2)
 
         positions = get_active_positions(symbol)
@@ -91,6 +97,7 @@ def verify_protection(order):
         ]
 
         if len(matching_positions) != 1:
+            print("POSITION NOT FOUND OR AMBIGUOUS")
             continue
 
         position_size = number(
@@ -98,6 +105,7 @@ def verify_protection(order):
         )
 
         if abs(position_size - expected_size) > 1e-8:
+            print("POSITION SIZE MISMATCH")
             continue
 
         plans = get_protection_orders(symbol)
@@ -105,15 +113,22 @@ def verify_protection(order):
         stop_size = 0.0
         target_size = 0.0
 
+        print("PROTECTION ORDERS FOUND:", len(plans))
+
         for plan in plans:
+            print("CHECKING PLAN:")
+            print(json.dumps(plan, indent=2))
 
             if plan.get("symbol") != symbol:
+                print("REJECTED: SYMBOL MISMATCH")
                 continue
 
             if plan.get("holdSide") != expected_side:
+                print("REJECTED: SIDE MISMATCH")
                 continue
 
             if plan.get("planStatus") != "live":
+                print("REJECTED: STATUS MISMATCH")
                 continue
 
             plan_type = plan.get("planType")
@@ -136,7 +151,6 @@ def verify_protection(order):
                 "loss_plan",
                 "pos_loss"
             ):
-
                 if math.isclose(
                     trigger,
                     expected_stop,
@@ -144,12 +158,13 @@ def verify_protection(order):
                     abs_tol=1e-8
                 ):
                     stop_size += size
+                else:
+                    print("STOP PRICE MISMATCH")
 
-            if plan_type in (
+            elif plan_type in (
                 "profit_plan",
                 "pos_profit"
             ):
-
                 if math.isclose(
                     trigger,
                     expected_target,
@@ -157,9 +172,13 @@ def verify_protection(order):
                     abs_tol=1e-8
                 ):
                     target_size += size
+                else:
+                    print("TARGET PRICE MISMATCH")
+
+            else:
+                print("UNKNOWN PLAN TYPE:", plan_type)
 
         stop_ok = stop_size >= position_size - 1e-8
-
         target_ok = target_size >= position_size - 1e-8
 
         print("Protection check:", attempt + 1)
@@ -168,7 +187,6 @@ def verify_protection(order):
         print("Target covered size:", target_size)
 
         if stop_ok and target_ok:
-
             print("PROTECTION VERIFIED")
 
             return {
@@ -185,7 +203,6 @@ def verify_protection(order):
 
 
 def main():
-
     print("===== DEMO PROTECTION CHECK =====")
 
     for symbol in [
@@ -193,7 +210,6 @@ def main():
         "ETHUSDT",
         "SOLUSDT"
     ]:
-
         positions = get_active_positions(symbol)
         plans = get_protection_orders(symbol)
 
