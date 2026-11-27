@@ -420,7 +420,7 @@ class ProtectionTests(unittest.TestCase):
                 self.target
             ])
 
-    @unittest.expectedFailure
+    
     def test_base_volume_compatibility(self):
 
         self.stop["baseVolume"] = self.stop.pop("size")
@@ -434,7 +434,7 @@ class ProtectionTests(unittest.TestCase):
 
         self.assertTrue(result["verified"])
 
-    @unittest.expectedFailure
+    
     def test_excessive_stop_size(self):
 
         self.stop["size"] = "0.02"
@@ -446,7 +446,7 @@ class ProtectionTests(unittest.TestCase):
 
         self.assertFalse(result["verified"])
 
-    @unittest.expectedFailure
+    
     def test_excessive_target_size(self):
 
         self.target["size"] = "0.02"
